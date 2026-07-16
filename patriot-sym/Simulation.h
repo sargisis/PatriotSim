@@ -33,13 +33,15 @@ public:
         QVector3D    pos;
         QString      name;
         WeaponSystem wsys       = WeaponSystem::PAC_3;
-        int          ammo       = 8;
-        int          maxAmmo    = 8;
-        float        intSpeed   = 2500.f;    // interceptor speed (m/s)
-        float        killRad    = 75.f;      // kill radius (m)
-        float        minAlt     = 5000.f;    // min intercept altitude
-        float        maxAlt     = 40000.f;   // max intercept altitude
+        int          ammo       = 12;
+        int          maxAmmo    = 12;
+        float        intSpeed   = 1700.f;    // interceptor speed m/s (PAC-3 MSE: 1700, THAAD: 2800, Tamir: 750)
+        float        killRad    = 20.f;      // kill radius m
+        float        minAlt     = 500.f;     // min intercept altitude m
+        float        maxAlt     = 24000.f;   // max intercept altitude m
         float        reloadTimer= 0.f;       // >0 means reloading
+        float        pkNormal   = 0.80f;     // Pk vs non-maneuvering target
+        float        pkManeuver = 0.55f;     // Pk vs maneuvering target
     };
 
     explicit Simulation(QObject* parent = nullptr);

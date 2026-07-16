@@ -67,7 +67,7 @@ SimRenderer::~SimRenderer()
 void SimRenderer::initializeGL()
 {
     initializeOpenGLFunctions();
-    glClearColor(0.04f, 0.055f, 0.08f, 1.f);
+    glClearColor(0.06f, 0.055f, 0.04f, 1.f);  // desert night sky
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -220,7 +220,8 @@ void SimRenderer::drawGrid()
 {
     m_basicProg.bind();
     m_basicProg.setUniformValue("uMVP",  m_vp);
-    m_basicProg.setUniformValue("uColor",QVector4D(0.11f,0.18f,0.24f,1.f));
+    // Desert sand tactical grid
+    m_basicProg.setUniformValue("uColor",QVector4D(0.18f,0.14f,0.08f,1.f));
     glBindVertexArray(m_gridVAO);
     glDrawArrays(GL_LINES,0,m_gridVertCount);
     glBindVertexArray(0);

@@ -8,31 +8,34 @@ static ScenarioDef buildDesertStorm()
 {
     ScenarioDef s;
     s.name     = "DESERT STORM";
-    s.briefing = "Intelligence reports incoming SCUD-B strikes. 3 waves, moderate density. Defend the capital.";
+    s.briefing = "SCUD-B and Shahab-3 strikes inbound. 3 waves. "
+                 "Classic ballistic threat — no maneuvering. Defend the capital.";
 
-    // Wave 1 — 3 SCUD from south
+    // Wave 1 — 4 SCUD-B from south, high arc
     WaveDef w1;
     w1.prePauseSec = 10.f; w1.intervalSec = 5.f;
-    for (int i = 0; i < 3; ++i) w1.threats.push_back({ ThreatType::SCUD_B, 0.f + i * 10.f });
+    for (float az : {355.f, 0.f, 5.f, 10.f})
+        w1.threats.push_back({ ThreatType::SCUD_B, az });
     s.waves.push_back(w1);
 
-    // Wave 2 — 5 SCUD from varying azimuths
+    // Wave 2 — mixed SCUD + slow Shahed drones from the flanks
     WaveDef w2;
     w2.prePauseSec = 12.f; w2.intervalSec = 4.f;
-    for (float az : {340.f, 10.f, 20.f, 350.f, 5.f})
+    for (float az : {340.f, 10.f, 20.f, 350.f})
         w2.threats.push_back({ ThreatType::SCUD_B, az });
+    for (float az : {85.f, 90.f, 95.f})
+        w2.threats.push_back({ ThreatType::SHAHED, az });
     s.waves.push_back(w2);
 
-    // Wave 3 — 6 SCUD + 2 HWASONG
+    // Wave 3 — 5 SCUD + 2 Shahab-3 (long-range MRBM, THAAD required)
     WaveDef w3;
     w3.prePauseSec = 15.f; w3.intervalSec = 3.f;
-    for (float az : {330.f, 340.f, 350.f, 0.f, 10.f, 20.f})
+    for (float az : {330.f, 340.f, 350.f, 5.f, 15.f})
         w3.threats.push_back({ ThreatType::SCUD_B, az });
-    w3.threats.push_back({ ThreatType::HWASONG, 5.f });
-    w3.threats.push_back({ ThreatType::HWASONG, 355.f });
+    w3.threats.push_back({ ThreatType::SHAHAB3, 0.f });
+    w3.threats.push_back({ ThreatType::SHAHAB3, 10.f });
     s.waves.push_back(w3);
 
-    // Assets
     s.assets = {
         { {0, 3000, 0}, "CAPITAL CITY",   ProtectedAsset::CITY,    100, 100, 3000, 30 },
         { {8000, 0, 0}, "AIR BASE",       ProtectedAsset::AIRBASE, 100, 100, 1500, 45 },
@@ -45,31 +48,36 @@ static ScenarioDef buildKoreaCrisis()
 {
     ScenarioDef s;
     s.name     = "KOREA CRISIS";
-    s.briefing = "Mixed ballistic and MIRV threat package detected. 4 waves. Radar station is priority target.";
+    s.briefing = "KN-23 quasi-ballistic + MIRV package inbound. "
+                 "KN-23 executes 30G pull-up — PAC-3 Pk drops to 55%. 4 waves.";
 
-    // Wave 1
+    // Wave 1 — SCUD warm-up
     WaveDef w1; w1.prePauseSec = 10.f; w1.intervalSec = 4.f;
-    for (float az : {0.f, 15.f, 345.f, 30.f}) w1.threats.push_back({ ThreatType::SCUD_B, az });
+    for (float az : {0.f, 15.f, 345.f, 30.f})
+        w1.threats.push_back({ ThreatType::SCUD_B, az });
     s.waves.push_back(w1);
 
-    // Wave 2 — first MIRV + HWASONG
+    // Wave 2 — first KN-23 (maneuvering!) + MIRV
     WaveDef w2; w2.prePauseSec = 12.f; w2.intervalSec = 3.5f;
     w2.threats.push_back({ ThreatType::MIRV, 5.f });
-    for (float az : {350.f, 10.f, 20.f}) w2.threats.push_back({ ThreatType::HWASONG, az });
+    for (float az : {350.f, 5.f, 15.f})
+        w2.threats.push_back({ ThreatType::KN23, az });
     s.waves.push_back(w2);
 
-    // Wave 3 — cruise + ballistic mix
+    // Wave 3 — cruise + KN-23 multi-axis attack
     WaveDef w3; w3.prePauseSec = 12.f; w3.intervalSec = 3.f;
-    for (float az : {90.f, 100.f, 80.f}) w3.threats.push_back({ ThreatType::CRUISE, az });
-    for (float az : {0.f, 350.f, 10.f}) w3.threats.push_back({ ThreatType::SCUD_B, az });
+    for (float az : {85.f, 90.f, 95.f})
+        w3.threats.push_back({ ThreatType::CRUISE, az });
+    for (float az : {355.f, 5.f, 350.f})
+        w3.threats.push_back({ ThreatType::KN23, az });
     s.waves.push_back(w3);
 
-    // Wave 4 — saturation
+    // Wave 4 — saturation: 2 MIRV + 6 KN-23
     WaveDef w4; w4.prePauseSec = 15.f; w4.intervalSec = 2.5f;
     w4.threats.push_back({ ThreatType::MIRV, 0.f });
     w4.threats.push_back({ ThreatType::MIRV, 20.f });
     for (float az : {340.f, 350.f, 0.f, 10.f, 20.f, 30.f})
-        w4.threats.push_back({ ThreatType::HWASONG, az });
+        w4.threats.push_back({ ThreatType::KN23, az });
     s.waves.push_back(w4);
 
     s.assets = {
@@ -84,40 +92,52 @@ static ScenarioDef buildTotalSaturation()
 {
     ScenarioDef s;
     s.name     = "TOTAL SATURATION";
-    s.briefing = "All threat types inbound. 5 waves. Hypersonic glide vehicles confirmed. Good luck.";
+    s.briefing = "All threat types. Iskander-M + HGV DF-17 + MIRV + Shahed swarm. "
+                 "5 waves. Iskander executes 30G throughout — THAAD is the only reliable counter.";
 
-    // Wave 1 — warm-up
+    // Wave 1 — SCUD salvo + Shahed drone swarm
     WaveDef w1; w1.prePauseSec = 8.f; w1.intervalSec = 3.f;
-    for (float az : {0.f, 20.f, 340.f, 10.f, 350.f}) w1.threats.push_back({ ThreatType::SCUD_B, az });
+    for (float az : {0.f, 20.f, 340.f, 10.f, 350.f})
+        w1.threats.push_back({ ThreatType::SCUD_B, az });
+    for (float az : {80.f, 85.f, 90.f, 95.f, 100.f})
+        w1.threats.push_back({ ThreatType::SHAHED, az });
     s.waves.push_back(w1);
 
-    // Wave 2 — first hypersonic
+    // Wave 2 — first HGV + KN-23 (both maneuvering)
     WaveDef w2; w2.prePauseSec = 10.f; w2.intervalSec = 2.5f;
     w2.threats.push_back({ ThreatType::HYPERSONIC, 5.f });
-    for (float az : {345.f, 355.f, 5.f, 15.f}) w2.threats.push_back({ ThreatType::HWASONG, az });
+    for (float az : {345.f, 355.f, 5.f, 15.f})
+        w2.threats.push_back({ ThreatType::KN23, az });
     w2.threats.push_back({ ThreatType::MIRV, 0.f });
     s.waves.push_back(w2);
 
-    // Wave 3 — cruise flanking attack
+    // Wave 3 — Iskander-M flanking + cruise from both sides
     WaveDef w3; w3.prePauseSec = 12.f; w3.intervalSec = 2.f;
-    for (float az : {85.f, 95.f, 90.f, 270.f, 275.f, 265.f})
+    for (float az : {85.f, 90.f, 95.f, 270.f, 275.f, 265.f})
         w3.threats.push_back({ ThreatType::CRUISE, az });
+    for (float az : {350.f, 5.f, 15.f})
+        w3.threats.push_back({ ThreatType::ISKANDER, az });
     w3.threats.push_back({ ThreatType::HYPERSONIC, 355.f });
     s.waves.push_back(w3);
 
-    // Wave 4 — multi-MIRV + hypersonic
+    // Wave 4 — multi-MIRV + Iskander + HGV
     WaveDef w4; w4.prePauseSec = 12.f; w4.intervalSec = 2.f;
-    for (int i = 0; i < 3; ++i) w4.threats.push_back({ ThreatType::MIRV, float(i*15) });
-    for (int i = 0; i < 2; ++i) w4.threats.push_back({ ThreatType::HYPERSONIC, float(i*10+350) });
-    for (float az : {0.f, 10.f, 350.f, 340.f}) w4.threats.push_back({ ThreatType::HWASONG, az });
+    for (int i = 0; i < 3; ++i) w4.threats.push_back({ ThreatType::MIRV, float(i * 15) });
+    for (int i = 0; i < 2; ++i) w4.threats.push_back({ ThreatType::HYPERSONIC, float(i * 10 + 350) });
+    for (float az : {0.f, 10.f, 350.f, 340.f})
+        w4.threats.push_back({ ThreatType::ISKANDER, az });
     s.waves.push_back(w4);
 
-    // Wave 5 — everything
+    // Wave 5 — everything simultaneously
     WaveDef w5; w5.prePauseSec = 15.f; w5.intervalSec = 1.5f;
     for (float az : {0.f, 30.f, 330.f, 10.f, 350.f, 20.f, 340.f, 5.f, 355.f, 15.f})
         w5.threats.push_back({ ThreatType::SCUD_B, az });
-    for (int i = 0; i < 3; ++i) w5.threats.push_back({ ThreatType::HYPERSONIC, float(i*15) });
-    for (int i = 0; i < 3; ++i) w5.threats.push_back({ ThreatType::MIRV, float(i*10+355) });
+    for (int i = 0; i < 3; ++i) w5.threats.push_back({ ThreatType::HYPERSONIC, float(i * 15) });
+    for (int i = 0; i < 3; ++i) w5.threats.push_back({ ThreatType::MIRV, float(i * 10 + 355) });
+    for (float az : {345.f, 0.f, 15.f})
+        w5.threats.push_back({ ThreatType::ISKANDER, az });
+    for (float az : {260.f, 270.f, 280.f, 80.f, 90.f, 100.f})
+        w5.threats.push_back({ ThreatType::SHAHED, az });
     s.waves.push_back(w5);
 
     s.assets = {

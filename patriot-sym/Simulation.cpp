@@ -8,16 +8,30 @@ static constexpr float PI = 3.14159265f;
 
 Simulation::Simulation(QObject* parent) : QObject(parent)
 {
-    // Multi-layer defense: THAAD high-alt, PAC-3 medium, Iron Dome low-alt
+    // ── Real-world multi-layer missile defense ────────────────────────────
+    // Sources: CSIS Missile Threat, Lockheed/Raytheon datasheets (open)
+    //
+    // THAAD: 8 rds/launcher, Mach 8.2 (2800 m/s), 40–150 km, hit-to-kill
+    //        AN/TPY-2 radar range ~1000 km. Reload: ~30 min (1800 s).
+    //        Pk ~0.90 vs ballistic, ~0.65 vs maneuvering (classified; open estimates).
+    //
+    // PAC-3 MSE: 12 rds/launcher, Mach 5 (1700 m/s), 500 m–24 km, proximity+HtK
+    //            AN/MPQ-65 radar ~150 km. Reload: ~35 min (2100 s).
+    //            Pk ~0.80 vs ballistic, ~0.55 vs maneuvering.
+    //
+    // Iron Dome: 20 Tamir rds/launcher, Mach 2.2 (750 m/s), 100 m–10 km
+    //            EL/M-2084 radar ~100 km. Reload: ~15 min (900 s).
+    //            Pk ~0.90 vs rockets/cruise. Does NOT engage maneuvering ballistics.
     m_batteries = {
-        {{ 0,     10000, 0}, "THAAD-1", WeaponSystem::THAAD,
-          8,  8, 3000.f, 150.f, 40000.f, 150000.f, 0.f},
-        {{ 12000, -6000, 0}, "PAC3-A",  WeaponSystem::PAC_3,
-          8,  8, 2500.f,  75.f,  5000.f,  40000.f, 0.f},
-        {{-12000, -6000, 0}, "PAC3-B",  WeaponSystem::PAC_3,
-          8,  8, 2500.f,  75.f,  5000.f,  40000.f, 0.f},
-        {{ 4000,   4000, 0}, "IDOME-1", WeaponSystem::IRON_DOME,
-          24, 24,  900.f,   8.f,    50.f,  10000.f, 0.f},
+        // pos                name        sys               ammo maxA  spd      kR     minA     maxA    rld   pkN   pkM
+        {{ 0,     10000, 0}, "THAAD-1",  WeaponSystem::THAAD,
+          8,  8, 2800.f, 10.f, 40000.f, 150000.f, 0.f, 0.90f, 0.65f},
+        {{ 12000, -6000, 0}, "PAC3-A",   WeaponSystem::PAC_3,
+          12, 12, 1700.f, 20.f,   500.f,  24000.f, 0.f, 0.80f, 0.55f},
+        {{-12000, -6000, 0}, "PAC3-B",   WeaponSystem::PAC_3,
+          12, 12, 1700.f, 20.f,   500.f,  24000.f, 0.f, 0.80f, 0.55f},
+        {{ 4000,   4000, 0}, "IDOME-1",  WeaponSystem::IRON_DOME,
+          20, 20,  750.f, 10.f,   100.f,  10000.f, 0.f, 0.90f, 0.90f},
     };
 
     m_game = new GameState(this);
@@ -167,10 +181,14 @@ void Simulation::launchInterceptorAt(int targetId, int batteryIdx)
     bty.ammo--;
 
     // Start reload when last interceptor is fired
+    // Real reload times (open-source estimates):
+    //   THAAD: ~30 min (1800 s) — palletized, crane-assisted
+    //   PAC-3: ~35 min (2100 s) — semi-manual canister swap
+    //   Iron Dome: ~15 min (900 s) — rapid palletized reload
     if (bty.ammo == 0) {
-        float reloadTime = (bty.wsys == WeaponSystem::THAAD)     ? 120.f
-                         : (bty.wsys == WeaponSystem::IRON_DOME) ?  20.f
-                                                                  :  45.f;
+        float reloadTime = (bty.wsys == WeaponSystem::THAAD)     ? 1800.f
+                         : (bty.wsys == WeaponSystem::IRON_DOME) ?  900.f
+                                                                  : 2100.f;
         bty.reloadTimer = reloadTime;
         emit eventLogged(QString("%1: WINCHESTER — reloading in %2 s")
                          .arg(bty.name).arg(int(reloadTime)));
@@ -505,6 +523,28 @@ void Simulation::checkInterceptions()
             }
 
             if (minDist <= intm.killRadius) {
+                // Probability-of-kill check (real-world Pk per shot)
+                // Battery Pk depends on target maneuvering capability
+                float pk = 1.0f;
+                if (intm.launchBattery >= 0 && intm.launchBattery < m_batteries.size()) {
+                    const LaunchBattery& bty = m_batteries[intm.launchBattery];
+                    pk = tgt.maneuvering ? bty.pkManeuver : bty.pkNormal;
+                }
+                // Roll — if Pk fails, interceptor misses (fuze didn't trigger / guidance error)
+                float roll = float(rand()) / float(RAND_MAX);
+                if (roll > pk) {
+                    // Near-miss: interceptor detonates but target survives
+                    intm.state = MissileState::Exploded;
+                    addExplosion((tgt.pos + intm.pos) * 0.5f);
+                    if (m_ai) m_ai->onInterceptorWasted(intm.id);
+                    emit eventLogged(
+                        QString("NEAR-MISS: #%1 → %2 #%3  alt=%4 km  Pk=%.0f%%")
+                        .arg(intm.id)
+                        .arg(getThreatSpec(tgt.threat).name).arg(tgt.id)
+                        .arg(tgt.pos.z() / 1000.f, 0, 'f', 1)
+                        .arg(pk * 100.f));
+                    continue;
+                }
                 tgt.state  = MissileState::Intercepted;
                 intm.state = MissileState::Exploded;
                 QVector3D blastPos = (tgt.pos + intm.pos) * 0.5f;
@@ -512,11 +552,12 @@ void Simulation::checkInterceptions()
                 if (m_game) m_game->onIntercept();
                 if (m_ai)  m_ai->onIntercept(tgt.id);
                 emit eventLogged(
-                    QString("INTERCEPT: #%1 killed %2 #%3  alt=%4 km  miss=%5 m")
+                    QString("INTERCEPT: #%1 killed %2 #%3  alt=%4 km  miss=%5 m  Pk=%.0f%%")
                     .arg(intm.id)
                     .arg(getThreatSpec(tgt.threat).name).arg(tgt.id)
                     .arg(blastPos.z() / 1000.f, 0, 'f', 1)
-                    .arg(minDist, 0, 'f', 0));
+                    .arg(minDist, 0, 'f', 0)
+                    .arg(pk * 100.f));
             }
         }
     }
@@ -524,25 +565,76 @@ void Simulation::checkInterceptions()
 
 void Simulation::updateManeuver(Missile& m, float dt)
 {
-    // Only maneuver during descent below 100 km
+    const ThreatSpec& sp = getThreatSpec(m.threat);
+
+    // ── KN-23 / Iskander pull-up maneuver ─────────────────────────
+    // Real behavior: quasi-ballistic, then pull-up at ~50 km to steepen
+    // terminal angle, followed by high-G lateral jink.
+    // We model it as: below 80 km descending → apply brief upward accel,
+    // then at < 40 km → random lateral jinks at max-G.
+    if (m.threat == ThreatType::KN23 || m.threat == ThreatType::ISKANDER) {
+        float alt = m.pos.z();
+        // Pull-up phase: 40–80 km, descending
+        if (alt < 80000.f && alt > 40000.f && m.vel.z() < 0.f && !m.milvSplit) {
+            // Apply nose-up force (reduces terminal approach predictability)
+            QVector3D horizDir = QVector3D(m.vel.x(), m.vel.y(), 0).normalized();
+            QVector3D pullUp   = QVector3D(-horizDir.x() * 0.3f,
+                                           -horizDir.y() * 0.3f,
+                                           1.0f).normalized();
+            m.vel += pullUp * sp.maxG * 0.4f * dt;
+        }
+        // Terminal phase: below 40 km → high-G lateral jinks
+        if (alt < 40000.f) {
+            m.maneuverTimer -= dt;
+            if (m.maneuverTimer <= 0.f) {
+                float angle = float(rand()) * 2.f * 3.14159265f / float(RAND_MAX);
+                QVector3D lateral(qCos(angle), qSin(angle), 0.f);
+                QVector3D velHat = m.vel.normalized();
+                lateral -= QVector3D::dotProduct(lateral, velHat) * velHat;
+                if (lateral.length() > 0.01f)
+                    m.maneuverAccel = lateral.normalized() * sp.maxG;
+                m.maneuverTimer = 1.0f + float(rand() % 200) / 100.f;  // 1-3 s
+            }
+            m.vel += m.maneuverAccel * dt;
+        }
+        return;
+    }
+
+    // ── HGV (Hypersonic Glide Vehicle) maneuver ───────────────────
+    // Glides at 40–80 km, continuously alters course
+    if (m.threat == ThreatType::HYPERSONIC) {
+        // Only maneuver in glide phase (below 100 km)
+        if (m.pos.z() > 100000.f) return;
+        m.maneuverTimer -= dt;
+        if (m.maneuverTimer <= 0.f) {
+            float angle = float(rand()) * 2.f * 3.14159265f / float(RAND_MAX);
+            QVector3D lateral(qCos(angle), qSin(angle), 0.f);
+            QVector3D velHat = m.vel.normalized();
+            lateral -= QVector3D::dotProduct(lateral, velHat) * velHat;
+            if (lateral.length() > 0.01f)
+                m.maneuverAccel = lateral.normalized() * sp.maxG;
+            m.maneuverTimer = 3.f + float(rand() % 400) / 100.f;  // 3-7 s
+        }
+        m.vel += m.maneuverAccel * dt;
+        return;
+    }
+
+    // ── Generic maneuvering missile ───────────────────────────────
     if (m.pos.z() > 100000.f || m.vel.z() >= 0.f) {
         m.maneuverAccel = {};
         m.maneuverTimer = 0.f;
         return;
     }
-
     m.maneuverTimer -= dt;
     if (m.maneuverTimer <= 0.f) {
-        // Pick a new random lateral direction perpendicular to velocity
-        float angle = float(rand()) * 2.f * float(M_PI) / float(RAND_MAX);
+        float angle = float(rand()) * 2.f * 3.14159265f / float(RAND_MAX);
         QVector3D lateral(qCos(angle), qSin(angle), 0.f);
         QVector3D velHat = m.vel.normalized();
         lateral -= QVector3D::dotProduct(lateral, velHat) * velHat;
         if (lateral.length() > 0.01f)
-            m.maneuverAccel = lateral.normalized() * 35.f;  // ~3.5g
-        m.maneuverTimer = 2.f + float(rand() % 400) / 100.f;  // 2-6 s
+            m.maneuverAccel = lateral.normalized() * sp.maxG;
+        m.maneuverTimer = 2.f + float(rand() % 400) / 100.f;
     }
-
     m.vel += m.maneuverAccel * dt;
 }
 
