@@ -43,6 +43,7 @@ private:
     void drawGrid();
     void drawBattery();
     void drawAssets();
+    void drawAIPanel(QPainter& p);
     void drawMissiles();
     void drawExplosions();
     void drawHUD(QPainter& p);

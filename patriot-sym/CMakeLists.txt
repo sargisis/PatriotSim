@@ -21,6 +21,8 @@ set(SOURCES
     RadarDisplay.cpp
     GameState.h
     GameState.cpp
+    EngagementAI.h
+    EngagementAI.cpp
     entities/Missile.h
     entities/ThreatType.h
     entities/ProtectedAsset.h

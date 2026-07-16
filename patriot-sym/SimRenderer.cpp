@@ -3,6 +3,7 @@
 #include "entities/Missile.h"
 #include "entities/ProtectedAsset.h"
 #include "GameState.h"
+#include "EngagementAI.h"
 #include "physics/Ballistic.h"
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -207,6 +208,7 @@ void SimRenderer::paintGL()
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     drawMissionOverlay(p);
+    drawAIPanel(p);
     drawTelemetry(p);
     drawTrackingReticles(p);
     drawBatteryLabels(p);
@@ -379,6 +381,50 @@ static QFont hudFont(int px, bool bold=false)
     f.setPixelSize(px);
     if(bold) f.setBold(true);
     return f;
+}
+
+void SimRenderer::drawAIPanel(QPainter& p)
+{
+    const EngagementAI* ai = m_sim->ai();
+    if (!ai) return;
+
+    // Bottom-left corner panel
+    const int pw = 168, ph = 64;
+    const int px = 14, py = height() - ph - 14;
+
+    p.fillRect(px, py, pw, ph, QColor(0, 0, 0, 160));
+    p.setPen(QPen(QColor(0x38, 0xB6, 0xFF, 160), 1));
+    p.drawRect(px, py, pw, ph);
+
+    // Header
+    p.setFont(hudFont(9, true));
+    p.setPen(QColor(0x38, 0xB6, 0xFF));
+    p.drawText(px + 6, py + 13, ai->enabled() ? "◈ ENGAGEMENT AI" : "◈ AI [OFF]");
+
+    auto row = [&](int y, const QString& lbl, const QString& val, QColor vc) {
+        p.setFont(hudFont(9));
+        p.setPen(QColor(0x5A, 0x8A, 0x7A));
+        p.drawText(px + 6, y, lbl);
+        p.setPen(vc);
+        p.drawText(px + 80, y, val);
+    };
+
+    float eps  = ai->epsilon() * 100.f;
+    float rate = ai->interceptRate() * 100.f;
+    float avgR = ai->avgReward();
+
+    row(py + 27, "EXPLORE", QString("%1%").arg(eps, 0, 'f', 1),
+        eps > 15.f ? QColor(0xFF,0xB0,0x20) : QColor(0x00,0xFF,0x88));
+    row(py + 40, "INTERCEPT", QString("%1%").arg(rate, 0, 'f', 1),
+        rate >= 85.f ? QColor(0x00,0xFF,0x88) : rate >= 70.f ? QColor(0xFF,0xB0,0x20) : QColor(0xFF,0x3B,0x30));
+    row(py + 53, "AVG REWARD", QString("%1").arg(avgR, 0, 'f', 1),
+        avgR >= 0.f ? QColor(0x00,0xFF,0x88) : QColor(0xFF,0x3B,0x30));
+
+    // Episode counter top-right of panel
+    p.setFont(hudFont(8));
+    p.setPen(QColor(0x38, 0x5A, 0x7A));
+    p.drawText(px + pw - 42, py + 13,
+               QString("EP %1").arg(ai->episodes()));
 }
 
 void SimRenderer::drawMissionOverlay(QPainter& p)

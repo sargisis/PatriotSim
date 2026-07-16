@@ -24,6 +24,9 @@ Simulation::Simulation(QObject* parent) : QObject(parent)
     connect(m_game, &GameState::launchRequested,
             this,   &Simulation::onGameLaunchRequested);
 
+    m_ai = new EngagementAI();
+    m_ai->load("patriot_ai.bin");  // load prior training if exists
+
     connect(&m_timer, &QTimer::timeout, this, &Simulation::tick);
     m_timer.start(16);
 }
@@ -248,6 +251,7 @@ void Simulation::reset()
     m_totalFired.clear();
     for (auto& b : m_batteries) { b.ammo = b.maxAmmo; b.reloadTimer = 0.f; }
     if (m_game) m_game->reset();
+    if (m_ai)  { m_ai->save("patriot_ai.bin"); }
     m_time   = 0.f;
     m_nextId = 0;
     emit updated();
@@ -348,7 +352,14 @@ void Simulation::stepMissile(Missile& m, float dt)
         if (m.type == MissileType::Target) {
             m.state = MissileState::Missed;
             addExplosion(m.pos);
-            if (m_game) m_game->onGroundImpact(m.pos);
+            bool hitAsset = false;
+            if (m_game) {
+                m_game->onGroundImpact(m.pos);
+                for (const auto& a : m_game->assets())
+                    if ((QVector3D(m.pos.x(),m.pos.y(),0)-QVector3D(a.pos.x(),a.pos.y(),0)).length() <= a.killRadius)
+                    { hitAsset = true; break; }
+            }
+            if (m_ai) m_ai->onGroundImpact(m.id, hitAsset);
             emit eventLogged(QString("IMPACT: %1 #%2 — ground strike")
                              .arg(getThreatSpec(m.threat).name).arg(m.id));
         } else {
@@ -357,10 +368,50 @@ void Simulation::stepMissile(Missile& m, float dt)
     }
 }
 
+AIEngagementState Simulation::buildAIState(const Missile& tgt, int flyingCount) const
+{
+    AIEngagementState s{};
+    s.altNorm     = tgt.pos.z() / 150000.f;
+    s.speedNorm   = tgt.vel.length() / 4000.f;
+    s.threatNorm  = float(int(tgt.threat)) / 4.f;
+    s.maneuvering = tgt.maneuvering ? 1.f : 0.f;
+
+    float minDistAsset = 1e9f;
+    if (m_game) {
+        for (const auto& a : m_game->assets()) {
+            if (a.destroyed()) continue;
+            float d = QVector3D(tgt.pos.x()-a.pos.x(), tgt.pos.y()-a.pos.y(), 0).length();
+            minDistAsset = qMin(minDistAsset, d);
+        }
+    }
+    s.assetThreat = (minDistAsset < 1e8f) ? qBound(0.f, 1.f - minDistAsset/20000.f, 1.f) : 0.f;
+
+    float posLen = tgt.pos.length();
+    if (posLen > 0.1f) {
+        QVector3D posHat = tgt.pos / posLen;
+        QVector3D velHat = tgt.vel.normalized();
+        s.headingInward = qBound(0.f, -QVector3D::dotProduct(velHat, posHat), 1.f);
+    }
+
+    for (int i = 0; i < qMin(4, (int)m_batteries.size()); ++i) {
+        const LaunchBattery& b = m_batteries[i];
+        float alt = tgt.pos.z();
+        bool inBand  = (alt >= b.minAlt && alt <= b.maxAlt);
+        bool canFire = (b.ammo > 0 && b.reloadTimer <= 0.f && inBand);
+        float T_go = 0.f;
+        if (canFire)
+            Interceptor::predictIntercept(b.pos, b.intSpeed * 0.80f,
+                                          tgt.pos, tgt.vel, &T_go);
+        if (canFire && T_go < REACTION_TIME) canFire = false;
+        s.eligible[i] = canFire ? 1.f : 0.f;
+        s.tgoNorm[i]  = (canFire && T_go > 0.f) ? qBound(0.f, T_go/60.f, 1.f) : 0.f;
+        s.ammoNorm[i] = float(b.ammo) / float(qMax(1, b.maxAmmo));
+    }
+    return s;
+}
+
 void Simulation::detectAndAutoLaunch()
 {
-    // IMPORTANT: collect launch orders first, then fire — launchInterceptorAt
-    // calls m_missiles.push_back() which invalidates iterators.
     struct Order { int targetId; int batteryIdx; };
     QVector<Order> orders;
 
@@ -372,69 +423,53 @@ void Simulation::detectAndAutoLaunch()
         const Missile& tgt = m_missiles[ti];
         if (tgt.type != MissileType::Target || tgt.state != MissileState::Flying) continue;
 
-        // Total-fire cap: don't keep wasting interceptors on hopeless targets
         int totalFired = m_totalFired.value(tgt.id, 0);
         if (totalFired >= MAX_INT_TOTAL) continue;
 
-        // Count interceptors currently flying toward this target
         int flying = 0;
         for (int mi = 0; mi < n; ++mi) {
-            const Missile& m = m_missiles[mi];
-            if (m.type == MissileType::Interceptor && m.state == MissileState::Flying
-                && m.targetId == tgt.id)
+            const Missile& m2 = m_missiles[mi];
+            if (m2.type == MissileType::Interceptor && m2.state == MissileState::Flying
+                && m2.targetId == tgt.id)
                 ++flying;
         }
         if (flying >= MAX_INT_FLYING) continue;
 
-        // Networked detection: any battery within range qualifies
+        // Networked radar check
         bool detected = false;
-        for (int bi = 0; bi < m_batteries.size(); ++bi) {
-            if ((tgt.pos - m_batteries[bi].pos).length() <= RADAR_RANGE) {
-                detected = true; break;
-            }
-        }
+        for (int bi = 0; bi < m_batteries.size(); ++bi)
+            if ((tgt.pos - m_batteries[bi].pos).length() <= RADAR_RANGE)
+            { detected = true; break; }
         if (!detected) continue;
 
-        // Rank all batteries by T_go, filtered by altitude band and ammo
-        int   best1 = -1, best2 = -1;
-        float tgo1  = 1e9f, tgo2 = 1e9f;
-
-        for (int bi = 0; bi < m_batteries.size(); ++bi) {
-            const LaunchBattery& b = m_batteries[bi];
-            if (b.ammo <= 0 || b.reloadTimer > 0.f) continue;
-            float alt = tgt.pos.z();
-            if (alt < b.minAlt || alt > b.maxAlt) continue;
-
-            float T_go = 0.f;
-            Interceptor::predictIntercept(b.pos, b.intSpeed * 0.80f,
-                                          tgt.pos, tgt.vel, &T_go);
-            if (T_go < REACTION_TIME) continue;
-
-            if (T_go < tgo1) {
-                tgo2 = tgo1; best2 = best1;
-                tgo1 = T_go; best1 = bi;
-            } else if (bi != best1 && T_go < tgo2) {
-                tgo2 = T_go; best2 = bi;
-            }
-        }
-
-        if (best1 < 0) continue;
-
-        // Log radar acquisition once per target
+        // Log acquisition once
         if (!m_radarAcquired.contains(tgt.id)) {
             m_radarAcquired.insert(tgt.id);
-            float rangekm = (tgt.pos - m_batteries[best1].pos).length() / 1000.f;
             emit eventLogged(
-                QString("RADAR: Target #%1 acquired  range=%2 km  T_go≈%3 s")
-                .arg(tgt.id).arg(rangekm, 0,'f',1).arg(tgo1, 0,'f',1));
+                QString("RADAR: %1 #%2  alt=%3 km  v=%4 m/s")
+                .arg(getThreatSpec(tgt.threat).name).arg(tgt.id)
+                .arg(tgt.pos.z()/1000.f,0,'f',1)
+                .arg(tgt.vel.length(),0,'f',0));
         }
 
-        // Queue interceptors to bring flying count up to MAX_INT_FLYING
-        int needed = MAX_INT_FLYING - flying;
-        if (needed >= 1 && best1 >= 0 && totalFired < MAX_INT_TOTAL)
-            orders.append({tgt.id, best1});
-        if (needed >= 2 && best2 >= 0 && totalFired + 1 < MAX_INT_TOTAL)
-            orders.append({tgt.id, best2});
+        // ── AI engagement decision ─────────────────────────────
+        AIEngagementState aiState = buildAIState(tgt, flying);
+        int batteryChoice = m_ai->decide(tgt.id, aiState);
+
+        if (batteryChoice >= 0 && totalFired < MAX_INT_TOTAL) {
+            orders.append({tgt.id, batteryChoice});
+            // If AI chose to fire and we still need a second interceptor, ask again
+            // (second decision uses a fresh state — the first battery's ammo is unchanged
+            //  until after the loop, so AI can pick a different battery)
+            if (flying + 1 < MAX_INT_FLYING && totalFired + 1 < MAX_INT_TOTAL) {
+                // Temporarily mark chosen battery ineligible for second pick
+                AIEngagementState aiState2 = aiState;
+                if (batteryChoice < 4) aiState2.eligible[batteryChoice] = 0.f;
+                int second = m_ai->decide(tgt.id + 10000, aiState2);  // synthetic id
+                if (second >= 0 && second != batteryChoice)
+                    orders.append({tgt.id, second});
+            }
+        }
     }
 
     for (const auto& o : orders) {
@@ -475,6 +510,7 @@ void Simulation::checkInterceptions()
                 QVector3D blastPos = (tgt.pos + intm.pos) * 0.5f;
                 addExplosion(blastPos);
                 if (m_game) m_game->onIntercept();
+                if (m_ai)  m_ai->onIntercept(tgt.id);
                 emit eventLogged(
                     QString("INTERCEPT: #%1 killed %2 #%3  alt=%4 km  miss=%5 m")
                     .arg(intm.id)

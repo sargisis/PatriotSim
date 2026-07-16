@@ -498,6 +498,7 @@ void MainWindow::onStartMission()
         bar->setStyleSheet("");
     }
 
+    if (m_sim->ai()) m_sim->ai()->beginEpisode();
     gs->startScenario(idx);
 
     // Populate asset health bars with names from scenario
@@ -524,6 +525,10 @@ void MainWindow::onWaveStarted(int wave, int total)
 
 void MainWindow::onMissionEnded(bool win, int score, int intercepted, int missed)
 {
+    if (m_sim->ai()) {
+        m_sim->ai()->endEpisode(win);
+        m_sim->ai()->save("patriot_ai.bin");
+    }
     m_btnMission->setText("▶  START MISSION");
     m_lblWaveStatus->setText(win ? "MISSION COMPLETE" : "MISSION FAILED");
     m_lblScore->setText(QString("SCORE  %1").arg(score));

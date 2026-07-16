@@ -3,6 +3,7 @@
 #include "entities/ThreatType.h"
 #include "entities/ProtectedAsset.h"
 #include "GameState.h"
+#include "EngagementAI.h"
 #include "physics/Ballistic.h"
 #include <QObject>
 #include <QTimer>
@@ -63,6 +64,7 @@ public:
     bool hasActiveInterceptors() const;
 
     GameState*                    gameState()  const { return m_game; }
+    EngagementAI*                 ai()         const { return m_ai; }
     const QVector<Missile>&       missiles()   const { return m_missiles; }
     const QVector<Explosion>&     explosions() const { return m_explosions; }
     const QVector<LaunchBattery>& batteries()  const { return m_batteries; }
@@ -84,6 +86,7 @@ private:
     void updateManeuver(Missile& m, float dt);
     void detectAndAutoLaunch();
     void checkInterceptions();
+    AIEngagementState buildAIState(const Missile& tgt, int flyingCount) const;
     void checkMirvSplit();      // detect apex crossing and spawn sub-warheads
     void updateReload(float dt);
     void addExplosion(QVector3D pos);
@@ -92,6 +95,7 @@ private:
 
     QTimer              m_timer;
     GameState*          m_game  = nullptr;
+    EngagementAI*       m_ai   = nullptr;
     QVector<Missile>        m_missiles;
     QVector<Explosion>      m_explosions;
     QVector<LaunchBattery>  m_batteries;
