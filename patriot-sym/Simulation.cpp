@@ -81,15 +81,69 @@ Missile Simulation::makeMissileFromThreat(ThreatType type, float azimuth)
     m.maneuvering = sp.maneuvering;
 
     float azRad = qDegreesToRadians(azimuth);
-    float elRad = qDegreesToRadians(sp.elevation);
-    float launchDist = sp.launchDist * 1000.f;
 
-    m.pos = QVector3D(-qSin(azRad) * launchDist,
-                      -qCos(azRad) * launchDist,
+    // ── Shahed-136: slow cruise/drone — launch low and near ──────────
+    // Can't be modeled as ballistic: 150 m/s ballistic range ≈ 2.3 km.
+    // Model as: starts at 500m altitude, 50 km out, flies nearly level.
+    if (type == ThreatType::SHAHED) {
+        float launchDist = 50000.f;
+        m.pos = QVector3D(-qSin(azRad) * launchDist,
+                          -qCos(azRad) * launchDist,
+                           500.f);  // cruise altitude
+        float elRad = qDegreesToRadians(0.5f);  // nearly flat
+        float hSpeed = sp.speed * qCos(elRad);
+        float vSpeed = sp.speed * qSin(elRad);
+        m.vel = QVector3D(hSpeed * qSin(azRad), hSpeed * qCos(azRad), vSpeed);
+        return m;
+    }
+
+    // ── Ballistic missiles: solve elevation to actually hit target area ──
+    // Problem: real missiles have rocket burn (≥80s thrust); we model burnout speed
+    // at launch point. So naive launch from 250km overshoots/undershoots.
+    // Fix: compute the elevation angle θ such that the missile lands near origin
+    // (the defended area with assets), given fixed burnout speed and launch distance.
+    //
+    // Max ballistic range (no drag, flat earth): R_max = v²/g
+    // For range R: sin(2θ) = R·g/v²  → θ = 0.5·asin(R·g/v²)
+    // Two solutions: low-angle (θ < 45°) and high-angle (θ > 45°, steeper arc).
+    // Ballistic missiles use high-angle solution for longer hang-time + harder intercept.
+
+    static constexpr float g = 9.81f;
+
+    // Aim at a random point in the defended zone (±4 km of origin)
+    float targetX = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
+    float targetY = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
+
+    float v = sp.speed;
+    float rMax = v * v / g;  // max range (no drag)
+
+    // Cap launch distance so range is achievable (use 85% of max range for headroom)
+    float launchDist = qMin(sp.launchDist * 1000.f, rMax * 0.85f);
+
+    // Launch position in azimuth direction, at given distance from target
+    m.pos = QVector3D(targetX - qSin(azRad) * launchDist,
+                      targetY - qCos(azRad) * launchDist,
                       0.f);
-    float hSpeed = sp.speed * qCos(elRad);
-    float vSpeed = sp.speed * qSin(elRad);
-    m.vel = QVector3D(hSpeed * qSin(azRad), hSpeed * qCos(azRad), vSpeed);
+
+    // Actual range from launch pos to target
+    float dx = targetX - m.pos.x();
+    float dy = targetY - m.pos.y();
+    float range = qSqrt(dx * dx + dy * dy);
+
+    // Solve for elevation (high-angle = steep arc, harder to intercept)
+    float sinTwoTheta = range * g / (v * v);
+    sinTwoTheta = qBound(-1.f, sinTwoTheta, 1.f);
+    // High-angle solution: θ = 90° - 0.5·asin(sin2θ)
+    float elDeg = 90.f - 0.5f * qRadiansToDegrees(qAsin(sinTwoTheta));
+    elDeg = qBound(20.f, elDeg, 85.f);  // clamp to physical limits
+    float elRad = qDegreesToRadians(elDeg);
+
+    // Velocity aimed directly toward target (not just azimuth direction)
+    QVector3D horizDir = QVector3D(dx, dy, 0).normalized();
+    float hSpeed = v * qCos(elRad);
+    float vSpeed = v * qSin(elRad);
+    m.vel = horizDir * hSpeed + QVector3D(0, 0, vSpeed);
+
     return m;
 }
 
