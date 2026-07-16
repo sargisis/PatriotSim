@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "SimRenderer.h"
 #include <QDockWidget>
+#include <QMessageBox>
 #include <QToolBar>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -24,10 +25,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 
     buildUI();
 
-    // Restore previous layout
+    // Restore layout only if saved with current dock version
     QSettings cfg("PatriotSim","PatriotSim");
-    if(cfg.contains("geometry")) restoreGeometry(cfg.value("geometry").toByteArray());
-    if(cfg.contains("state"))    restoreState(cfg.value("state").toByteArray());
+    if(cfg.value("dockVersion",0).toInt() == 2) {
+        if(cfg.contains("geometry")) restoreGeometry(cfg.value("geometry").toByteArray());
+        if(cfg.contains("state"))    restoreState(cfg.value("state").toByteArray());
+    } else {
+        cfg.clear();  // wipe stale settings so default layout is used
+    }
 }
 
 MainWindow::~MainWindow() {}
@@ -35,8 +40,9 @@ MainWindow::~MainWindow() {}
 void MainWindow::closeEvent(QCloseEvent* e)
 {
     QSettings cfg("PatriotSim","PatriotSim");
-    cfg.setValue("geometry", saveGeometry());
-    cfg.setValue("state",    saveState());
+    cfg.setValue("geometry",    saveGeometry());
+    cfg.setValue("state",       saveState());
+    cfg.setValue("dockVersion", 2);
     e->accept();
 }
 
@@ -229,7 +235,7 @@ QWidget* MainWindow::buildRightDockContent()
 
     vl->addStretch();
 
-    // Wire buttons
+    // Wire buttons (free-play)
     connect(btnLaunch,  &QPushButton::clicked, this, &MainWindow::onLaunchTarget);
     connect(btnReset,   &QPushButton::clicked, this, &MainWindow::onReset);
     connect(m_btnPause, &QPushButton::clicked, this, [this]{
@@ -245,6 +251,76 @@ QWidget* MainWindow::buildRightDockContent()
     return w;
 }
 
+// ─── Mission dock ─────────────────────────────────────────────
+
+QWidget* MainWindow::buildMissionDockContent()
+{
+    auto* w  = new QWidget;
+    auto* vl = new QVBoxLayout(w);
+    vl->setContentsMargins(8, 8, 8, 8);
+    vl->setSpacing(8);
+
+    // Scenario selector
+    auto* grpScen = new QGroupBox("SCENARIO");
+    auto* fl = new QFormLayout(grpScen);
+    fl->setSpacing(6);
+    fl->setContentsMargins(6, 4, 6, 6);
+
+    m_cbScenario = new QComboBox;
+    for (int i = 0; i < GameState::scenarioCount(); ++i)
+        m_cbScenario->addItem(GameState::scenarioName(i));
+    fl->addRow("", m_cbScenario);
+
+    m_lblBriefing = new QLabel(GameState::scenarioBriefing(0));
+    m_lblBriefing->setWordWrap(true);
+    m_lblBriefing->setStyleSheet("color:#8A9AB8;font-size:10px;");
+    fl->addRow("", m_lblBriefing);
+
+    connect(m_cbScenario, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int i){
+                m_lblBriefing->setText(GameState::scenarioBriefing(i));
+            });
+
+    vl->addWidget(grpScen);
+
+    // Start / abort
+    m_btnMission = new QPushButton("▶  START MISSION");
+    m_btnMission->setObjectName("btnLaunch");
+    vl->addWidget(m_btnMission);
+    connect(m_btnMission, &QPushButton::clicked, this, &MainWindow::onStartMission);
+
+    // Wave status
+    m_lblWaveStatus = new QLabel("—");
+    m_lblWaveStatus->setAlignment(Qt::AlignCenter);
+    m_lblWaveStatus->setStyleSheet("color:#FFB020;font-weight:bold;font-size:12px;");
+    vl->addWidget(m_lblWaveStatus);
+
+    m_lblScore = new QLabel("SCORE  0");
+    m_lblScore->setAlignment(Qt::AlignCenter);
+    m_lblScore->setStyleSheet("color:#38B6FF;font-weight:bold;font-size:13px;");
+    vl->addWidget(m_lblScore);
+
+    // Asset health bars (3 bars, names filled when mission starts)
+    auto* grpAssets = new QGroupBox("PROTECTED ASSETS");
+    auto* avl = new QVBoxLayout(grpAssets);
+    avl->setContentsMargins(6, 4, 6, 6);
+    avl->setSpacing(4);
+    for (int i = 0; i < 3; ++i) {
+        auto* bar = new QProgressBar;
+        bar->setRange(0, 100);
+        bar->setValue(100);
+        bar->setFormat("%v%");
+        bar->setTextVisible(true);
+        bar->setFixedHeight(18);
+        avl->addWidget(bar);
+        m_assetBars.push_back(bar);
+    }
+    vl->addWidget(grpAssets);
+    vl->addStretch();
+
+    return w;
+}
+
 // ─── Main build ───────────────────────────────────────────────
 
 void MainWindow::buildUI()
@@ -252,6 +328,13 @@ void MainWindow::buildUI()
     m_sim = new Simulation(this);
     connect(m_sim, &Simulation::eventLogged, this, &MainWindow::logEvent);
     connect(m_sim, &Simulation::updated,     this, &MainWindow::onSimUpdated);
+
+    // Wire GameState signals
+    GameState* gs = m_sim->gameState();
+    connect(gs, &GameState::logEvent,     this, &MainWindow::logEvent);
+    connect(gs, &GameState::waveStarted,  this, &MainWindow::onWaveStarted);
+    connect(gs, &GameState::missionEnded, this, &MainWindow::onMissionEnded);
+    connect(gs, &GameState::assetDamaged, this, &MainWindow::onAssetDamaged);
 
     // Central widget = renderer
     m_renderer = new SimRenderer(m_sim, this);
@@ -266,14 +349,6 @@ void MainWindow::buildUI()
     toolbar->addWidget(buildStatusBarWidget());
     addToolBar(Qt::TopToolBarArea, toolbar);
 
-    // Right dock — parameters
-    auto* rightDock = new QDockWidget("TARGET CONTROL", this);
-    rightDock->setObjectName("rightDock");
-    rightDock->setWidget(buildRightDockContent());
-    rightDock->setMinimumWidth(300);
-    rightDock->setMaximumWidth(360);
-    addDockWidget(Qt::RightDockWidgetArea, rightDock);
-
     // Left dock — radar display
     m_radar = new RadarDisplay(m_sim, this);
     connect(m_sim, &Simulation::updated, m_radar, &RadarDisplay::onSimUpdated);
@@ -281,8 +356,25 @@ void MainWindow::buildUI()
     radarDock->setObjectName("radarDock");
     radarDock->setWidget(m_radar);
     radarDock->setMinimumWidth(240);
-    radarDock->setMaximumWidth(420);
+    radarDock->setMaximumWidth(340);
     addDockWidget(Qt::LeftDockWidgetArea, radarDock);
+
+    // Right dock — parameters (top)
+    auto* rightDock = new QDockWidget("TARGET CONTROL", this);
+    rightDock->setObjectName("rightDock");
+    rightDock->setWidget(buildRightDockContent());
+    rightDock->setMinimumWidth(290);
+    rightDock->setMaximumWidth(340);
+    addDockWidget(Qt::RightDockWidgetArea, rightDock);
+
+    // Right dock — mission control (bottom, split under TARGET CONTROL)
+    auto* missionDock = new QDockWidget("MISSION CONTROL", this);
+    missionDock->setObjectName("missionDock");
+    missionDock->setWidget(buildMissionDockContent());
+    missionDock->setMinimumWidth(290);
+    missionDock->setMaximumWidth(340);
+    addDockWidget(Qt::RightDockWidgetArea, missionDock);
+    splitDockWidget(rightDock, missionDock, Qt::Vertical);
 
     // Bottom dock — event log
     auto* bottomDock = new QDockWidget("EVENT LOG", this);
@@ -358,6 +450,10 @@ void MainWindow::onSimUpdated()
     setIndicator(m_lblTracking, m_sim->hasActiveInterceptors());
     setIndicator(m_lblWeapons,  m_sim->hasActiveInterceptors());
 
+    // Update score label live
+    if (m_lblScore && m_sim->gameState() && m_sim->gameState()->active())
+        m_lblScore->setText(QString("SCORE  %1").arg(m_sim->gameState()->score()));
+
     // Sim time MM:SS.t
     float t  = m_sim->elapsedTime();
     int   mm = int(t) / 60;
@@ -379,17 +475,116 @@ void MainWindow::setIndicator(QLabel* lbl, bool active)
     }
 }
 
+void MainWindow::onStartMission()
+{
+    GameState* gs = m_sim->gameState();
+    if (gs->active()) {
+        // Abort current mission
+        m_sim->reset();
+        m_btnMission->setText("▶  START MISSION");
+        m_lblWaveStatus->setText("—");
+        m_lblScore->setText("SCORE  0");
+        logEvent("MISSION ABORTED");
+        return;
+    }
+
+    int idx = m_cbScenario ? m_cbScenario->currentIndex() : 0;
+    m_sim->reset();
+    m_log->clear();
+
+    // Reset asset health bars
+    for (auto* bar : m_assetBars) {
+        bar->setValue(100);
+        bar->setStyleSheet("");
+    }
+
+    gs->startScenario(idx);
+
+    // Populate asset health bars with names from scenario
+    const auto& assets = gs->assets();
+    for (int i = 0; i < m_assetBars.size(); ++i) {
+        if (i < assets.size()) {
+            m_assetBars[i]->setValue(100);
+            m_assetBars[i]->setFormat(QString("%1  %v%%").arg(assets[i].name));
+            m_assetBars[i]->setStyleSheet("QProgressBar::chunk{background:#00CC66;}");
+        }
+    }
+
+    m_btnMission->setText("■  ABORT MISSION");
+    m_lblWaveStatus->setText(QString("WAVE 1/%1 — INCOMING").arg(gs->totalWaves()));
+    m_lblScore->setText("SCORE  0");
+
+    logEvent(QString("=== %1 STARTED ===").arg(GameState::scenarioName(idx)));
+}
+
+void MainWindow::onWaveStarted(int wave, int total)
+{
+    m_lblWaveStatus->setText(QString("WAVE %1/%2 — INBOUND").arg(wave).arg(total));
+}
+
+void MainWindow::onMissionEnded(bool win, int score, int intercepted, int missed)
+{
+    m_btnMission->setText("▶  START MISSION");
+    m_lblWaveStatus->setText(win ? "MISSION COMPLETE" : "MISSION FAILED");
+    m_lblScore->setText(QString("SCORE  %1").arg(score));
+
+    QString result = win
+        ? QString("MISSION COMPLETE\nScore: %1\nIntercepted: %2  |  Missed: %3")
+          .arg(score).arg(intercepted).arg(missed)
+        : QString("MISSION FAILED\nScore: %1\nIntercepted: %2  |  Missed: %3")
+          .arg(score).arg(intercepted).arg(missed);
+
+    QMessageBox box(this);
+    box.setWindowTitle(win ? "Mission Complete" : "Mission Failed");
+    box.setText(result);
+    box.setIcon(win ? QMessageBox::Information : QMessageBox::Warning);
+    box.exec();
+}
+
+void MainWindow::onAssetDamaged(int idx, float health)
+{
+    if (idx < 0 || idx >= m_assetBars.size()) return;
+    QProgressBar* bar = m_assetBars[idx];
+    bar->setValue(int(health));
+
+    // Update bar color based on health
+    if (health <= 0.f) {
+        bar->setStyleSheet("QProgressBar::chunk{background:#FF3B30;}");
+    } else if (health < 40.f) {
+        bar->setStyleSheet("QProgressBar::chunk{background:#FF3B30;}");
+    } else if (health < 70.f) {
+        bar->setStyleSheet("QProgressBar::chunk{background:#FFB020;}");
+    } else {
+        bar->setStyleSheet("QProgressBar::chunk{background:#00CC66;}");
+    }
+
+    // Update asset names from scenario
+    const GameState* gs = m_sim->gameState();
+    if (gs && idx < gs->assets().size()) {
+        bar->setFormat(QString("%1  %v%%").arg(gs->assets()[idx].name));
+    }
+}
+
 void MainWindow::logEvent(const QString& msg)
 {
     // Colorize by prefix
     QString color = "#8A9AB8"; // default gray-blue
     bool bold = false;
 
-    if(msg.startsWith("RADAR"))     color = "#FFB020";
-    else if(msg.startsWith("PAC-3") || msg.startsWith("AUTO")) color = "#00FF88";
-    else if(msg.startsWith("INTERCEPT")){ color = "#00FF88"; bold = true; }
-    else if(msg.startsWith("TARGET"))   color = "#5A8ABF";
-    else if(msg.startsWith("IMPACT"))   { color = "#FF3B30"; bold = true; }
+    if(msg.startsWith("RADAR"))          color = "#FFB020";
+    else if(msg.startsWith("INTERCEPT"))  { color = "#00FF88"; bold = true; }
+    else if(msg.startsWith("THAAD") ||
+            msg.startsWith("PAC-3") ||
+            msg.startsWith("IRON-DOME"))  color = "#00FF88";
+    else if(msg.startsWith("TARGET") ||
+            msg.startsWith("THREAT"))     color = "#5A8ABF";
+    else if(msg.startsWith("IMPACT"))     { color = "#FF3B30"; bold = true; }
+    else if(msg.startsWith("WAVE"))       { color = "#FFD040"; bold = true; }
+    else if(msg.startsWith("MISSION"))    { color = "#FF3B30"; bold = true; }
+    else if(msg.startsWith("ASSET HIT")) { color = "#FF8C00"; bold = true; }
+    else if(msg.startsWith("ASSET DEST")){ color = "#FF3B30"; bold = true; }
+    else if(msg.startsWith("MIRV"))       { color = "#FF6060"; bold = true; }
+    else if(msg.startsWith("==="))        { color = "#38B6FF"; bold = true; }
 
     // Timestamp
     QString ts = QTime::currentTime().toString("HH:mm:ss");

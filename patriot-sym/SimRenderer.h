@@ -5,6 +5,7 @@
 #include <QMatrix4x4>
 #include <QVector3D>
 #include <QPoint>
+#include "Simulation.h"
 
 class Simulation;
 
@@ -41,10 +42,12 @@ private:
 
     void drawGrid();
     void drawBattery();
+    void drawAssets();
     void drawMissiles();
     void drawExplosions();
     void drawHUD(QPainter& p);
     void drawTelemetry(QPainter& p);
+    void drawMissionOverlay(QPainter& p);
     void drawCompass(QPainter& p);
     void drawTrackingReticles(QPainter& p);
     void drawBatteryLabels(QPainter& p);

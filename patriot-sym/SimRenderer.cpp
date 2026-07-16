@@ -1,6 +1,8 @@
 #include "SimRenderer.h"
 #include "Simulation.h"
 #include "entities/Missile.h"
+#include "entities/ProtectedAsset.h"
+#include "GameState.h"
 #include "physics/Ballistic.h"
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -196,6 +198,7 @@ void SimRenderer::paintGL()
     m_vp=m_proj*m_view;
 
     drawGrid();
+    drawAssets();
     drawBattery();
     drawMissiles();
     drawExplosions();
@@ -203,6 +206,7 @@ void SimRenderer::paintGL()
     // HUD overlay
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
+    drawMissionOverlay(p);
     drawTelemetry(p);
     drawTrackingReticles(p);
     drawBatteryLabels(p);
@@ -258,6 +262,44 @@ void SimRenderer::drawBattery()
         glDrawArrays(GL_LINES,0,buf.size()/4);
     }
 
+    glBindVertexArray(0);
+}
+
+void SimRenderer::drawAssets()
+{
+    const GameState* gs = m_sim->gameState();
+    if (!gs || gs->assets().isEmpty()) return;
+
+    m_basicProg.bind();
+    glBindVertexArray(m_circleVAO);
+
+    for (const auto& a : gs->assets()) {
+        float frac = a.healthFrac();
+        // Color: green(full) → yellow(50%) → red(dead)
+        float r = (frac < 0.5f) ? 1.f : (1.f - frac) * 2.f;
+        float g = (frac > 0.5f) ? 1.f : frac * 2.f;
+        float b = 0.f;
+        float alpha = a.destroyed() ? 0.25f : 0.6f;
+
+        // Kill radius ring
+        QMatrix4x4 model;
+        model.translate(QVector3D(a.pos.x(), a.pos.y(), 10.f));
+        model.scale(a.killRadius);
+        m_basicProg.setUniformValue("uMVP",  m_vp * model);
+        m_basicProg.setUniformValue("uColor", QVector4D(r, g, b, alpha * 0.5f));
+        glDrawArrays(GL_LINE_STRIP, 0, m_circleSegments + 1);
+
+        // Inner asset marker (small solid ring)
+        float markerR = (a.type == ProtectedAsset::CITY)   ? 600.f
+                      : (a.type == ProtectedAsset::AIRBASE) ? 350.f
+                                                             : 180.f;
+        model.setToIdentity();
+        model.translate(QVector3D(a.pos.x(), a.pos.y(), 10.f));
+        model.scale(markerR);
+        m_basicProg.setUniformValue("uMVP",  m_vp * model);
+        m_basicProg.setUniformValue("uColor", QVector4D(r, g, b, alpha));
+        glDrawArrays(GL_LINE_STRIP, 0, m_circleSegments + 1);
+    }
     glBindVertexArray(0);
 }
 
@@ -337,6 +379,103 @@ static QFont hudFont(int px, bool bold=false)
     f.setPixelSize(px);
     if(bold) f.setBold(true);
     return f;
+}
+
+void SimRenderer::drawMissionOverlay(QPainter& p)
+{
+    const GameState* gs = m_sim->gameState();
+    if (!gs || !gs->active()) return;
+
+    const int panW = 210, padX = 14;
+    int y = 14;
+
+    // ── Phase / wave banner ──────────────────────────────────
+    QString phaseStr;
+    QColor  phaseBg(0, 0, 0, 160);
+    QColor  phaseFg(0x00, 0xFF, 0x88);
+
+    switch (gs->phase()) {
+    case GameState::Phase::COUNTDOWN:
+        phaseStr = QString("WAVE %1/%2  INBOUND  T-%3 s")
+                   .arg(gs->currentWave()).arg(gs->totalWaves())
+                   .arg(int(gs->countdown()) + 1);
+        phaseFg = QColor(0xFF, 0xB0, 0x20);
+        break;
+    case GameState::Phase::WAVE_ACTIVE:
+        phaseStr = QString("WAVE %1/%2  ■ ACTIVE")
+                   .arg(gs->currentWave()).arg(gs->totalWaves());
+        phaseFg = QColor(0xFF, 0x3B, 0x30);
+        break;
+    case GameState::Phase::INTERWAVE:
+        phaseStr = QString("WAVE %1 CLEAR — NEXT WAVE PENDING")
+                   .arg(gs->currentWave());
+        phaseFg = QColor(0x00, 0xFF, 0x88);
+        break;
+    case GameState::Phase::MISSION_WIN:
+        phaseStr = "MISSION COMPLETE";
+        phaseFg  = QColor(0x00, 0xFF, 0x88);
+        phaseBg  = QColor(0, 50, 0, 180);
+        break;
+    case GameState::Phase::MISSION_FAIL:
+        phaseStr = "MISSION FAILED";
+        phaseFg  = QColor(0xFF, 0x3B, 0x30);
+        phaseBg  = QColor(60, 0, 0, 180);
+        break;
+    default: break;
+    }
+
+    if (!phaseStr.isEmpty()) {
+        QFont f = hudFont(12, true);
+        p.setFont(f);
+        QFontMetrics fm(f);
+        int tw = fm.horizontalAdvance(phaseStr) + 16;
+        QRect banner((width() - tw) / 2, 10, tw, 22);
+        p.fillRect(banner, phaseBg);
+        p.setPen(QPen(phaseFg, 1));
+        p.drawRect(banner);
+        p.setPen(phaseFg);
+        p.drawText(banner, Qt::AlignCenter, phaseStr);
+        y = banner.bottom() + 8;
+    }
+
+    // ── Score / stats strip ──────────────────────────────────
+    {
+        int sw = 200;
+        QRect scoreBox(width() - sw - padX, 10, sw, 22);
+        p.fillRect(scoreBox, QColor(0, 0, 0, 160));
+        p.setPen(QColor(0x38, 0xB6, 0xFF));
+        p.setFont(hudFont(11, true));
+        p.drawText(scoreBox, Qt::AlignCenter,
+                   QString("SCORE %1  |  %2↑ %3↓")
+                   .arg(gs->score(), 6)
+                   .arg(gs->intercepted())
+                   .arg(gs->missed()));
+    }
+
+    // ── Asset health bars ────────────────────────────────────
+    {
+        const auto& assets = gs->assets();
+        int bx = padX, by = height() - 14 - assets.size() * 22;
+        int bw = 160, bh = 14;
+
+        for (const auto& a : assets) {
+            float frac = a.healthFrac();
+            float r = (frac < 0.5f) ? 1.f : (1.f - frac) * 2.f;
+            float g2 = (frac > 0.5f) ? 1.f : frac * 2.f;
+
+            QRect bg(bx, by, bw, bh);
+            p.fillRect(bg, QColor(0, 0, 0, 160));
+            p.fillRect(QRect(bx, by, int(bw * frac), bh),
+                       QColor(int(r*255), int(g2*255), 0, 200));
+            p.setPen(QColor(60, 80, 90));
+            p.drawRect(bg);
+            p.setFont(hudFont(9, true));
+            p.setPen(QColor(220, 220, 220));
+            p.drawText(bg.adjusted(4, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                       QString("%1  %2%").arg(a.name).arg(int(a.health)));
+            by += bh + 4;
+        }
+    }
 }
 
 void SimRenderer::drawTelemetry(QPainter& p)
@@ -453,8 +592,40 @@ void SimRenderer::drawBatteryLabels(QPainter& p)
         if(clip.w() <= 0.f) continue;
         float sx = (clip.x()/clip.w()+1.f)*0.5f*width();
         float sy = (1.f-clip.y()/clip.w())*0.5f*height();
-        p.setPen(QColor(0x00,0xFF,0x88));
+
+        // Color by weapon system
+        QColor col = (bty.wsys == WeaponSystem::THAAD)      ? QColor(0x38,0xB6,0xFF)
+                   : (bty.wsys == WeaponSystem::IRON_DOME)  ? QColor(0xFF,0xD0,0x40)
+                                                             : QColor(0x00,0xFF,0x88);
+        p.setPen(col);
         p.drawText(QPointF(sx+6, sy), bty.name);
+        p.setFont(hudFont(9));
+        p.setPen(QColor(180,180,180));
+        p.drawText(QPointF(sx+6, sy+12),
+                   QString("%1/%2").arg(bty.ammo).arg(bty.maxAmmo));
+        p.setFont(hudFont(10, true));
+    }
+
+    // Asset labels
+    const GameState* gs = m_sim->gameState();
+    if (!gs) return;
+    p.setFont(hudFont(9, true));
+    for (const auto& a : gs->assets()) {
+        QVector4D clip = m_vp * QVector4D(QVector3D(a.pos.x(), a.pos.y(), 800.f), 1.f);
+        if (clip.w() <= 0.f) continue;
+        float sx = (clip.x()/clip.w()+1.f)*0.5f*width();
+        float sy = (1.f-clip.y()/clip.w())*0.5f*height();
+
+        QColor col = a.destroyed() ? QColor(100,100,100)
+                   : a.healthFrac() > 0.5f ? QColor(0x40,0xFF,0x80)
+                   : a.healthFrac() > 0.25f ? QColor(0xFF,0xB0,0x20)
+                                            : QColor(0xFF,0x3B,0x30);
+        p.setPen(col);
+        p.drawText(QPointF(sx+8, sy), a.name);
+        p.setFont(hudFont(8));
+        p.setPen(QColor(180,180,180));
+        p.drawText(QPointF(sx+8, sy+11), QString("%1%").arg(int(a.health)));
+        p.setFont(hudFont(9, true));
     }
 }
 

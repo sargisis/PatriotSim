@@ -8,12 +8,21 @@ static constexpr float PI = 3.14159265f;
 
 Simulation::Simulation(QObject* parent) : QObject(parent)
 {
-    // Triangle of three PAC-3 batteries — different angles, better coverage
+    // Multi-layer defense: THAAD high-alt, PAC-3 medium, Iron Dome low-alt
     m_batteries = {
-        {{ 0,      10000, 0}, "BTY-A", 8, 8},
-        {{ 12000, -6000, 0}, "BTY-B", 8, 8},
-        {{-12000, -6000, 0}, "BTY-C", 8, 8},
+        {{ 0,     10000, 0}, "THAAD-1",  WeaponSystem::THAAD,
+          8,  8, 3000.f, 150.f, 40000.f, 150000.f, 0.f},
+        {{ 12000, -6000, 0}, "PAC3-A",   WeaponSystem::PAC_3,
+          8,  8, 2500.f,  75.f,  5000.f,  40000.f, 0.f},
+        {{-12000, -6000, 0}, "PAC3-B",   WeaponSystem::PAC_3,
+          8,  8, 2500.f,  75.f,  5000.f,  40000.f, 0.f},
+        {{ 4000,   4000, 0}, "IDOME-1",  WeaponSystem::IRON_DOME,
+          20, 20,  350.f,  10.f,    50.f,  10000.f, 0.f},
     };
+
+    m_game = new GameState(this);
+    connect(m_game, &GameState::launchRequested,
+            this,   &Simulation::onGameLaunchRequested);
 
     connect(&m_timer, &QTimer::timeout, this, &Simulation::tick);
     m_timer.start(16);
@@ -36,11 +45,55 @@ bool Simulation::hasActiveInterceptors() const
     return false;
 }
 
+// ── Game-mode threat launch ────────────────────────────────────────
+void Simulation::onGameLaunchRequested(ThreatType type, float azimuth)
+{
+    launchThreatType(type, azimuth);
+}
+
+Missile Simulation::makeMissileFromThreat(ThreatType type, float azimuth)
+{
+    const ThreatSpec& sp = getThreatSpec(type);
+    Missile m;
+    m.id          = m_nextId++;
+    m.type        = MissileType::Target;
+    m.threat      = type;
+    m.mass        = sp.mass;
+    m.diameter    = sp.diameter;
+    m.cd0         = sp.cd0;
+    m.maneuvering = sp.maneuvering;
+
+    float azRad = qDegreesToRadians(azimuth);
+    float elRad = qDegreesToRadians(sp.elevation);
+    float launchDist = sp.launchDist * 1000.f;
+
+    m.pos = QVector3D(-qSin(azRad) * launchDist,
+                      -qCos(azRad) * launchDist,
+                      0.f);
+    float hSpeed = sp.speed * qCos(elRad);
+    float vSpeed = sp.speed * qSin(elRad);
+    m.vel = QVector3D(hSpeed * qSin(azRad), hSpeed * qCos(azRad), vSpeed);
+    return m;
+}
+
+void Simulation::launchThreatType(ThreatType type, float azimuth)
+{
+    Missile m = makeMissileFromThreat(type, azimuth);
+    m_missiles.push_back(m);
+    const ThreatSpec& sp = getThreatSpec(type);
+    emit eventLogged(QString("THREAT #%1 [%2] — az %3°  v=%4 m/s")
+                     .arg(m.id).arg(sp.name)
+                     .arg(azimuth, 0, 'f', 1)
+                     .arg(sp.speed, 0, 'f', 0));
+}
+
+// ── Manual launch (free-play) ─────────────────────────────────────
 void Simulation::launchTarget(QVector3D impactHint)
 {
     Missile m;
     m.id       = m_nextId++;
     m.type     = MissileType::Target;
+    m.threat   = ThreatType::SCUD_B;
     m.mass     = m_params.mass;
     m.diameter = m_params.diameter;
     m.cd0      = m_params.cd0;
@@ -80,49 +133,106 @@ void Simulation::launchInterceptorAt(int targetId, int batteryIdx)
         emit eventLogged(QString("%1: WINCHESTER — no interceptors remaining").arg(bty.name));
         return;
     }
+    if (bty.reloadTimer > 0.f) return;
 
     const Missile* tgt = nullptr;
     for (const auto& m : m_missiles)
         if (m.id == targetId && m.state == MissileState::Flying) { tgt = &m; break; }
     if (!tgt) return;
 
-    const QVector3D& bPos = bty.pos;
+    // Altitude band check
+    float alt = tgt->pos.z();
+    if (alt < bty.minAlt || alt > bty.maxAlt) return;
 
     float T_go = 0.f;
-    // Conservative speed estimate (gravity/drag reduce average speed)
-    QVector3D ip = Interceptor::predictIntercept(bPos, INT_SPEED * 0.80f,
+    QVector3D ip = Interceptor::predictIntercept(bty.pos, bty.intSpeed * 0.80f,
                                                   tgt->pos, tgt->vel, &T_go);
-
-    // Don't fire if T_go is too short to intercept usefully
     if (T_go < REACTION_TIME) return;
 
     Missile intm;
-    intm.id       = m_nextId++;
-    intm.type     = MissileType::Interceptor;
-    intm.mass     = 90.f;
-    intm.diameter = 0.255f;
-    intm.cd0      = 0.1f;
-    intm.pos      = bPos;
-    intm.targetId = targetId;
-    intm.vel      = (ip - bPos).normalized() * INT_SPEED;
+    intm.id            = m_nextId++;
+    intm.type          = MissileType::Interceptor;
+    intm.mass          = 90.f;
+    intm.diameter      = 0.255f;
+    intm.cd0           = 0.1f;
+    intm.killRadius    = bty.killRad;
+    intm.pos           = bty.pos;
+    intm.targetId      = targetId;
+    intm.launchBattery = batteryIdx;
+    intm.vel           = (ip - bty.pos).normalized() * bty.intSpeed;
     m_missiles.push_back(intm);
     bty.ammo--;
 
-    emit eventLogged(QString("PAC-3 %1 [%2]: Interceptor #%3 → TGT #%4  T_go=%5 s  alt=%6 km")
-                     .arg(bty.name).arg(bty.ammo)
-                     .arg(intm.id).arg(targetId)
-                     .arg(T_go, 0, 'f', 1)
-                     .arg(ip.z() / 1000.f, 0, 'f', 1));
+    const char* wsName = (bty.wsys == WeaponSystem::THAAD)     ? "THAAD"
+                       : (bty.wsys == WeaponSystem::IRON_DOME) ? "IRON-DOME"
+                                                                : "PAC-3";
+    emit eventLogged(
+        QString("%1 %2 [ammo:%3]: #%4→TGT#%5  T_go=%6s  alt=%7km")
+        .arg(wsName).arg(bty.name).arg(bty.ammo)
+        .arg(intm.id).arg(targetId)
+        .arg(T_go, 0, 'f', 1)
+        .arg(ip.z() / 1000.f, 0, 'f', 1));
     emit ammoBatteryUpdated(batteryIdx, bty.ammo, bty.maxAmmo);
+}
+
+void Simulation::updateReload(float dt)
+{
+    for (int i = 0; i < m_batteries.size(); ++i) {
+        LaunchBattery& b = m_batteries[i];
+        if (b.reloadTimer <= 0.f) continue;
+        b.reloadTimer -= dt;
+        if (b.reloadTimer <= 0.f) {
+            b.reloadTimer = 0.f;
+            b.ammo = b.maxAmmo;
+            emit ammoBatteryUpdated(i, b.ammo, b.maxAmmo);
+            emit eventLogged(QString("%1: RELOADED — %2 ready").arg(b.name).arg(b.ammo));
+        }
+    }
+}
+
+void Simulation::checkMirvSplit()
+{
+    for (auto& m : m_missiles) {
+        if (m.type != MissileType::Target
+            || m.state != MissileState::Flying
+            || m.threat != ThreatType::MIRV
+            || m.milvSplit) continue;
+
+        bool ascending = (m.vel.z() > 0.f);
+        if (m.wasAscending && !ascending) {
+            m.milvSplit = true;
+            m.state     = MissileState::Exploded;
+
+            const QVector3D spreadDir = QVector3D(m.vel.x(), m.vel.y(), 0).normalized();
+            const QVector3D perpDir   = QVector3D(-spreadDir.y(), spreadDir.x(), 0);
+
+            for (int i = -1; i <= 1; ++i) {
+                Missile sub = makeMissileFromThreat(ThreatType::SCUD_B, 0.f);
+                sub.id    = m_nextId++;
+                sub.pos   = m.pos;
+                sub.vel   = m.vel * 0.95f + perpDir * float(i) * 150.f;
+                sub.trail.clear();
+                m_spawnQueue.push_back(sub);
+            }
+
+            emit eventLogged(
+                QString("MIRV #%1 SPLIT at alt=%2 km — 3 sub-warheads inbound")
+                .arg(m.id).arg(m.pos.z() / 1000.f, 0, 'f', 1));
+            emit mirvSplit(m.id, m.pos, m.vel);
+        }
+        m.wasAscending = ascending;
+    }
 }
 
 void Simulation::reset()
 {
     m_missiles.clear();
     m_explosions.clear();
+    m_spawnQueue.clear();
     m_radarAcquired.clear();
     m_totalFired.clear();
-    for (auto& b : m_batteries) b.ammo = b.maxAmmo;
+    for (auto& b : m_batteries) { b.ammo = b.maxAmmo; b.reloadTimer = 0.f; }
+    if (m_game) m_game->reset();
     m_time   = 0.f;
     m_nextId = 0;
     emit updated();
@@ -146,9 +256,29 @@ void Simulation::stepPhysics(float dt)
         if (m.state == MissileState::Flying)
             stepMissile(m, dt);
 
+    checkMirvSplit();
+
+    // Flush sub-warhead spawn queue (adding during loop would invalidate iterators)
+    if (!m_spawnQueue.isEmpty()) {
+        for (auto& sm : m_spawnQueue)
+            m_missiles.push_back(sm);
+        m_spawnQueue.clear();
+    }
+
     if (m_autoIntercept)
         detectAndAutoLaunch();
     checkInterceptions();
+
+    updateReload(dt);
+
+    // Tick game state
+    if (m_game && m_game->active()) {
+        int flyingTargets = 0;
+        for (const auto& m2 : m_missiles)
+            if (m2.type == MissileType::Target && m2.state == MissileState::Flying)
+                ++flyingTargets;
+        m_game->tick(dt, flyingTargets);
+    }
 
     for (auto& ex : m_explosions) {
         ex.age += dt;
@@ -203,7 +333,9 @@ void Simulation::stepMissile(Missile& m, float dt)
         if (m.type == MissileType::Target) {
             m.state = MissileState::Missed;
             addExplosion(m.pos);
-            emit eventLogged(QString("IMPACT: Target #%1 — ground strike  (not intercepted)").arg(m.id));
+            if (m_game) m_game->onGroundImpact(m.pos);
+            emit eventLogged(QString("IMPACT: %1 #%2 — ground strike")
+                             .arg(getThreatSpec(m.threat).name).arg(m.id));
         } else {
             m.state = MissileState::Missed;
         }
@@ -248,14 +380,18 @@ void Simulation::detectAndAutoLaunch()
         }
         if (!detected) continue;
 
-        // Rank ALL batteries by T_go — no per-battery range restriction
-        // (networked fire control — any battery can engage any detected target)
+        // Rank all batteries by T_go, filtered by altitude band and ammo
         int   best1 = -1, best2 = -1;
         float tgo1  = 1e9f, tgo2 = 1e9f;
 
         for (int bi = 0; bi < m_batteries.size(); ++bi) {
+            const LaunchBattery& b = m_batteries[bi];
+            if (b.ammo <= 0 || b.reloadTimer > 0.f) continue;
+            float alt = tgt.pos.z();
+            if (alt < b.minAlt || alt > b.maxAlt) continue;
+
             float T_go = 0.f;
-            Interceptor::predictIntercept(m_batteries[bi].pos, INT_SPEED * 0.80f,
+            Interceptor::predictIntercept(b.pos, b.intSpeed * 0.80f,
                                           tgt.pos, tgt.vel, &T_go);
             if (T_go < REACTION_TIME) continue;
 
@@ -318,14 +454,16 @@ void Simulation::checkInterceptions()
                 minDist = relPos.length();
             }
 
-            if (minDist <= KILL_RADIUS) {
+            if (minDist <= intm.killRadius) {
                 tgt.state  = MissileState::Intercepted;
                 intm.state = MissileState::Exploded;
                 QVector3D blastPos = (tgt.pos + intm.pos) * 0.5f;
                 addExplosion(blastPos);
+                if (m_game) m_game->onIntercept();
                 emit eventLogged(
-                    QString("INTERCEPT: #%1 destroyed TGT #%2  alt=%3 km  miss=%4 m")
-                    .arg(intm.id).arg(tgt.id)
+                    QString("INTERCEPT: #%1 killed %2 #%3  alt=%4 km  miss=%5 m")
+                    .arg(intm.id)
+                    .arg(getThreatSpec(tgt.threat).name).arg(tgt.id)
                     .arg(blastPos.z() / 1000.f, 0, 'f', 1)
                     .arg(minDist, 0, 'f', 0));
             }

@@ -1,5 +1,6 @@
 #pragma once
 #include "Simulation.h"
+#include "GameState.h"
 #include "RadarDisplay.h"
 #include <QMainWindow>
 #include <QLabel>
@@ -11,6 +12,8 @@
 #include <QDockWidget>
 #include <QButtonGroup>
 #include <QFormLayout>
+#include <QComboBox>
+#include <QProgressBar>
 #include <QStyle>
 #include <QTimer>
 
@@ -31,11 +34,16 @@ private slots:
     void onReset();
     void onGroundClicked(QVector3D wp);
     void onSimUpdated();
+    void onStartMission();
+    void onMissionEnded(bool win, int score, int intercepted, int missed);
+    void onWaveStarted(int wave, int total);
+    void onAssetDamaged(int idx, float health);
 
 private:
     // helpers
     void buildUI();
     QWidget* buildRightDockContent();
+    QWidget* buildMissionDockContent();
     QWidget* buildStatusBarWidget();
     void addSliderRow(QFormLayout* f, const QString& lbl,
                       QSlider*& sl, QDoubleSpinBox*& sp,
@@ -75,6 +83,14 @@ private:
 
     // Radar display
     RadarDisplay* m_radar = nullptr;
+
+    // Mission panel widgets
+    QComboBox*    m_cbScenario    = nullptr;
+    QPushButton*  m_btnMission    = nullptr;
+    QLabel*       m_lblWaveStatus = nullptr;
+    QLabel*       m_lblScore      = nullptr;
+    QLabel*       m_lblBriefing   = nullptr;
+    QVector<QProgressBar*> m_assetBars;
 
     // Log
     QTextEdit* m_log = nullptr;

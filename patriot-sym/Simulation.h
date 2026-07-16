@@ -1,5 +1,8 @@
 #pragma once
 #include "entities/Missile.h"
+#include "entities/ThreatType.h"
+#include "entities/ProtectedAsset.h"
+#include "GameState.h"
 #include "physics/Ballistic.h"
 #include <QObject>
 #include <QTimer>
@@ -13,23 +16,29 @@ class Simulation : public QObject
     Q_OBJECT
 public:
     struct LaunchParams {
-        float speed     = 1200.f; // m/s
-        float elevation = 45.f;   // degrees above horizon
-        float azimuth   = 0.f;    // degrees from North, clockwise
+        float speed     = 1200.f;
+        float elevation = 45.f;
+        float azimuth   = 0.f;
         float windSpeed = 0.f;
         float windDir   = 270.f;
         float latitude  = 40.18f;
         float mass      = 800.f;
         float diameter  = 0.88f;
         float cd0         = 0.3f;
-        bool  maneuvering = false;  // terminal-phase evasion maneuver
+        bool  maneuvering = false;
     };
 
     struct LaunchBattery {
-        QVector3D pos;
-        QString   name;
-        int       ammo    = 8;
-        int       maxAmmo = 8;
+        QVector3D    pos;
+        QString      name;
+        WeaponSystem wsys       = WeaponSystem::PAC_3;
+        int          ammo       = 8;
+        int          maxAmmo    = 8;
+        float        intSpeed   = 2500.f;    // interceptor speed (m/s)
+        float        killRad    = 75.f;      // kill radius (m)
+        float        minAlt     = 5000.f;    // min intercept altitude
+        float        maxAlt     = 40000.f;   // max intercept altitude
+        float        reloadTimer= 0.f;       // >0 means reloading
     };
 
     explicit Simulation(QObject* parent = nullptr);
@@ -38,6 +47,7 @@ public:
     const LaunchParams& params() const    { return m_params; }
 
     void launchTarget(QVector3D impactHint = {});
+    void launchThreatType(ThreatType type, float azimuth);   // game mode
     void launchInterceptorAt(int targetId, int batteryIdx);
     void reset();
     void togglePause();
@@ -49,9 +59,10 @@ public:
     void setSpeedMult(int m)  { m_speedMult = qBound(1, m, 4); }
     int  speedMult() const    { return m_speedMult; }
 
-    bool hasRadarContact()        const;
-    bool hasActiveInterceptors()  const;
+    bool hasRadarContact()       const;
+    bool hasActiveInterceptors() const;
 
+    GameState*                    gameState()  const { return m_game; }
     const QVector<Missile>&       missiles()   const { return m_missiles; }
     const QVector<Explosion>&     explosions() const { return m_explosions; }
     const QVector<LaunchBattery>& batteries()  const { return m_batteries; }
@@ -61,9 +72,11 @@ signals:
     void updated();
     void eventLogged(const QString& msg);
     void ammoBatteryUpdated(int batteryIdx, int ammo, int maxAmmo);
+    void mirvSplit(int parentId, QVector3D pos, QVector3D vel);  // for renderer flash
 
 private slots:
     void tick();
+    void onGameLaunchRequested(ThreatType type, float azimuth);
 
 private:
     void stepPhysics(float dt);
@@ -71,26 +84,31 @@ private:
     void updateManeuver(Missile& m, float dt);
     void detectAndAutoLaunch();
     void checkInterceptions();
+    void checkMirvSplit();      // detect apex crossing and spawn sub-warheads
+    void updateReload(float dt);
     void addExplosion(QVector3D pos);
 
-    QTimer             m_timer;
-    QVector<Missile>       m_missiles;
-    QVector<Explosion>     m_explosions;
-    QVector<LaunchBattery> m_batteries;
+    Missile makeMissileFromThreat(ThreatType type, float azimuth);
+
+    QTimer              m_timer;
+    GameState*          m_game  = nullptr;
+    QVector<Missile>        m_missiles;
+    QVector<Explosion>      m_explosions;
+    QVector<LaunchBattery>  m_batteries;
+    QVector<Missile>        m_spawnQueue;  // MIRV sub-warheads to add next frame
+
     LaunchParams  m_params;
     float         m_time         = 0.f;
     bool          m_paused       = false;
     bool          m_autoIntercept= true;
     int           m_speedMult    = 1;
     int           m_nextId       = 0;
-    QSet<int>        m_radarAcquired;
-    QMap<int,int>    m_totalFired;   // targetId → total interceptors fired (all-time)
+    QSet<int>     m_radarAcquired;
+    QMap<int,int> m_totalFired;
 
-    static constexpr float DT            = 1.f / 60.f;
-    static constexpr float RADAR_RANGE   = 150000.f;  // 150 km — shared networked radar
-    static constexpr float KILL_RADIUS   = 75.f;      // m
-    static constexpr float REACTION_TIME = 2.f;       // s
-    static constexpr float INT_SPEED     = 2500.f;    // m/s
-    static constexpr int   MAX_INT_FLYING   = 2;      // max simultaneously flying at one target
-    static constexpr int   MAX_INT_TOTAL    = 4;      // max ever fired at one target
+    static constexpr float DT           = 1.f / 60.f;
+    static constexpr float RADAR_RANGE  = 150000.f;
+    static constexpr float REACTION_TIME= 2.f;
+    static constexpr int   MAX_INT_FLYING  = 2;
+    static constexpr int   MAX_INT_TOTAL   = 4;
 };

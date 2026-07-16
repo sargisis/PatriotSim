@@ -19,7 +19,11 @@ set(SOURCES
     SimRenderer.cpp
     RadarDisplay.h
     RadarDisplay.cpp
+    GameState.h
+    GameState.cpp
     entities/Missile.h
+    entities/ThreatType.h
+    entities/ProtectedAsset.h
     physics/Ballistic.h
     physics/Ballistic.cpp
     physics/Interceptor.h

@@ -1,6 +1,7 @@
 #pragma once
 #include <QVector3D>
 #include <QVector>
+#include "ThreatType.h"
 
 enum class MissileType  { Target, Interceptor };
 enum class MissileState { Flying, Intercepted, Missed, Exploded };
@@ -9,14 +10,21 @@ struct Missile {
     int           id       = -1;
     MissileType   type     = MissileType::Target;
     MissileState  state    = MissileState::Flying;
-    QVector3D     pos;        // meters, ENU (East-North-Up)
-    QVector3D     vel;        // m/s
-    float         mass     = 800.f;   // kg
-    float         diameter = 0.88f;  // m
-    float         cd0      = 0.3f;
-    float         age      = 0.f;    // seconds since launch
-    int           targetId = -1;     // for interceptors
+    ThreatType    threat   = ThreatType::SCUD_B;   // target threat type
+    QVector3D     pos;
+    QVector3D     vel;
+    float         mass       = 800.f;
+    float         diameter   = 0.88f;
+    float         cd0        = 0.3f;
+    float         age        = 0.f;
+    float         killRadius = 75.f;   // interceptor kill radius (from battery type)
+    int           targetId   = -1;
+    int           launchBattery = -1;  // which battery launched this interceptor
     QVector<QVector3D> trail;
+
+    // MIRV tracking
+    bool wasAscending = true;    // last tick was ascending
+    bool milvSplit    = false;   // already split (MIRV only)
 
     // Terminal-phase evasion (targets only)
     bool      maneuvering    = false;
