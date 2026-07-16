@@ -10,14 +10,14 @@ Simulation::Simulation(QObject* parent) : QObject(parent)
 {
     // Multi-layer defense: THAAD high-alt, PAC-3 medium, Iron Dome low-alt
     m_batteries = {
-        {{ 0,     10000, 0}, "THAAD-1",  WeaponSystem::THAAD,
+        {{ 0,     10000, 0}, "THAAD-1", WeaponSystem::THAAD,
           8,  8, 3000.f, 150.f, 40000.f, 150000.f, 0.f},
-        {{ 12000, -6000, 0}, "PAC3-A",   WeaponSystem::PAC_3,
+        {{ 12000, -6000, 0}, "PAC3-A",  WeaponSystem::PAC_3,
           8,  8, 2500.f,  75.f,  5000.f,  40000.f, 0.f},
-        {{-12000, -6000, 0}, "PAC3-B",   WeaponSystem::PAC_3,
+        {{-12000, -6000, 0}, "PAC3-B",  WeaponSystem::PAC_3,
           8,  8, 2500.f,  75.f,  5000.f,  40000.f, 0.f},
-        {{ 4000,   4000, 0}, "IDOME-1",  WeaponSystem::IRON_DOME,
-          20, 20,  350.f,  10.f,    50.f,  10000.f, 0.f},
+        {{ 4000,   4000, 0}, "IDOME-1", WeaponSystem::IRON_DOME,
+          24, 24,  900.f,   8.f,    50.f,  10000.f, 0.f},
     };
 
     m_game = new GameState(this);
@@ -163,6 +163,16 @@ void Simulation::launchInterceptorAt(int targetId, int batteryIdx)
     m_missiles.push_back(intm);
     bty.ammo--;
 
+    // Start reload when last interceptor is fired
+    if (bty.ammo == 0) {
+        float reloadTime = (bty.wsys == WeaponSystem::THAAD)     ? 120.f
+                         : (bty.wsys == WeaponSystem::IRON_DOME) ?  20.f
+                                                                  :  45.f;
+        bty.reloadTimer = reloadTime;
+        emit eventLogged(QString("%1: WINCHESTER — reloading in %2 s")
+                         .arg(bty.name).arg(int(reloadTime)));
+    }
+
     const char* wsName = (bty.wsys == WeaponSystem::THAAD)     ? "THAAD"
                        : (bty.wsys == WeaponSystem::IRON_DOME) ? "IRON-DOME"
                                                                 : "PAC-3";
@@ -207,11 +217,16 @@ void Simulation::checkMirvSplit()
             const QVector3D perpDir   = QVector3D(-spreadDir.y(), spreadDir.x(), 0);
 
             for (int i = -1; i <= 1; ++i) {
-                Missile sub = makeMissileFromThreat(ThreatType::SCUD_B, 0.f);
-                sub.id    = m_nextId++;
-                sub.pos   = m.pos;
-                sub.vel   = m.vel * 0.95f + perpDir * float(i) * 150.f;
-                sub.trail.clear();
+                Missile sub;
+                sub.id         = m_nextId++;
+                sub.type       = MissileType::Target;
+                sub.threat     = ThreatType::SCUD_B;
+                sub.mass       = 300.f;
+                sub.diameter   = 0.65f;
+                sub.cd0        = 0.28f;
+                sub.maneuvering= false;
+                sub.pos        = m.pos;
+                sub.vel        = m.vel * 0.95f + perpDir * float(i) * 200.f;
                 m_spawnQueue.push_back(sub);
             }
 

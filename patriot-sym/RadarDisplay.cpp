@@ -1,6 +1,8 @@
 #include "RadarDisplay.h"
 #include "Simulation.h"
 #include "entities/Missile.h"
+#include "entities/ProtectedAsset.h"
+#include "GameState.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QDateTime>
@@ -189,6 +191,38 @@ void RadarDisplay::paintEvent(QPaintEvent*)
         }
     }
 
+    // ── Protected asset markers ──────────────────────────────────
+    const GameState* gs = m_sim->gameState();
+    if (gs && !gs->assets().isEmpty()) {
+        QFont af; af.setPixelSize(8); af.setBold(true); p.setFont(af);
+        for (const auto& a : gs->assets()) {
+            QPointF sp = toScreen(a.pos.x(), a.pos.y(), c, scale);
+            float frac = a.healthFrac();
+            QColor col = a.destroyed()      ? QColor(80, 80, 80)
+                       : frac > 0.6f        ? QColor(0, 200, 120)
+                       : frac > 0.3f        ? QColor(255, 200, 0)
+                                            : QColor(255, 60,  60);
+            float sz = (a.type == ProtectedAsset::CITY)   ? 6.f
+                     : (a.type == ProtectedAsset::AIRBASE) ? 5.f : 4.f;
+
+            // Square marker
+            p.setPen(QPen(col, 1.5f));
+            p.setBrush(QColor(col.red(), col.green(), col.blue(), 40));
+            p.drawRect(QRectF(sp.x()-sz, sp.y()-sz, sz*2, sz*2));
+
+            // Kill radius ring (faint)
+            float rr = a.killRadius * scale;
+            p.setPen(QPen(col, 0.5f, Qt::DotLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(sp, rr, rr);
+
+            // Label
+            p.setPen(col);
+            p.drawText(QPointF(sp.x() + sz + 2, sp.y() + 4),
+                       QString("%1 %2%").arg(a.name.left(3)).arg(int(a.health)));
+        }
+    }
+
     // ── Battery markers ──────────────────────────────────────────
     for (const auto& bty : m_sim->batteries()) {
         QPointF sp = toScreen(bty.pos.x(), bty.pos.y(), c, scale);
@@ -198,9 +232,10 @@ void RadarDisplay::paintEvent(QPaintEvent*)
             << QPointF(sp.x()-5, sp.y()+4)
             << QPointF(sp.x()+5, sp.y()+4);
 
-        // Color by ammo: green=full, yellow=half, red=low, grey=winchester
+        // Color: reloading=cyan pulse, empty=grey, low=red, half=yellow, full=green
         QColor col;
-        if      (bty.ammo == 0)              col = QColor(80, 80, 80);
+        if      (bty.reloadTimer > 0.f)      col = QColor(0, 200, 255);   // reloading
+        else if (bty.ammo == 0)              col = QColor(80, 80, 80);
         else if (bty.ammo <= bty.maxAmmo/4)  col = QColor(255, 60, 60);
         else if (bty.ammo <= bty.maxAmmo/2)  col = QColor(255, 200, 0);
         else                                 col = QColor(0, 200, 120);
@@ -209,10 +244,13 @@ void RadarDisplay::paintEvent(QPaintEvent*)
         p.setBrush(QColor(col.red(), col.green(), col.blue(), 60));
         p.drawPolygon(tri);
 
-        // Name label
+        // Name label + ammo / reload
         p.setPen(col);
         QFont f; f.setPixelSize(9); f.setBold(true); p.setFont(f);
-        p.drawText(QPointF(sp.x()+7, sp.y()+4), bty.name);
+        QString label = bty.reloadTimer > 0.f
+            ? QString("%1 RLD%2s").arg(bty.name).arg(int(bty.reloadTimer)+1)
+            : QString("%1 %2/%3").arg(bty.name).arg(bty.ammo).arg(bty.maxAmmo);
+        p.drawText(QPointF(sp.x()+7, sp.y()+4), label);
     }
 
     // ── Range labels ─────────────────────────────────────────────
