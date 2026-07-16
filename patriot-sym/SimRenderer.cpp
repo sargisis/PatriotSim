@@ -310,6 +310,7 @@ void SimRenderer::drawMissiles()
 {
     for(const auto& m:m_sim->missiles()){
         if(m.trail.isEmpty()) continue;
+        if(m.state != MissileState::Flying) continue;  // hide trail on intercept/impact
 
         QVector<float> buf;
         int n=m.trail.size();
