@@ -17,13 +17,13 @@ class Simulation : public QObject
     Q_OBJECT
 public:
     struct LaunchParams {
-        float speed     = 1200.f;
+        float speed     = 3000.f;
         float elevation = 45.f;
         float azimuth   = 0.f;
         float windSpeed = 0.f;
         float windDir   = 270.f;
         float latitude  = 40.18f;
-        float mass      = 800.f;
+        float mass      = 2000.f;
         float diameter  = 0.88f;
         float cd0         = 0.3f;
         bool  maneuvering = false;
