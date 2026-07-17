@@ -110,52 +110,106 @@ Missile Simulation::makeMissileFromThreat(ThreatType type, float azimuth)
         return m;
     }
 
-    // ── Ballistic missiles: solve elevation to actually hit target area ──
-    // Problem: real missiles have rocket burn (≥80s thrust); we model burnout speed
-    // at launch point. So naive launch from 250km overshoots/undershoots.
-    // Fix: compute the elevation angle θ such that the missile lands near origin
-    // (the defended area with assets), given fixed burnout speed and launch distance.
+    // ── Ballistic missiles — start at burnout altitude ───────────────
+    // Without rocket thrust our physics model can't launch from ground:
+    // sea-level air drag on a 0.885m diameter body at 1500 m/s = 26G deceleration,
+    // killing the missile in seconds. Real missiles burn for 80+ seconds during
+    // which thrust overcomes drag; we skip that phase and start post-burnout.
     //
-    // Max ballistic range (no drag, flat earth): R_max = v²/g
-    // For range R: sin(2θ) = R·g/v²  → θ = 0.5·asin(R·g/v²)
-    // Two solutions: low-angle (θ < 45°) and high-angle (θ > 45°, steeper arc).
-    // Ballistic missiles use high-angle solution for longer hang-time + harder intercept.
+    // Burnout altitudes (open sources):
+    //   SCUD-B: ~20 km   KN-23: ~35 km   Iskander: ~30 km
+    //   Shahab-3: ~80 km  MIRV: ~60 km
+    //
+    // At burnout altitude air density is 10-100x lower → drag is manageable.
+    // We place the missile at burnout altitude already moving at burnout speed,
+    // aimed at the target area. Physics are fully correct from that point on.
 
     static constexpr float g = 9.81f;
 
-    // Aim at a random point in the defended zone (±4 km of origin)
+    // Burnout altitude per type
+    float burnoutAlt = 20000.f;
+    switch (type) {
+    case ThreatType::SCUD_B:   burnoutAlt = 20000.f; break;
+    case ThreatType::KN23:     burnoutAlt = 35000.f; break;
+    case ThreatType::ISKANDER: burnoutAlt = 30000.f; break;
+    case ThreatType::SHAHAB3:  burnoutAlt = 80000.f; break;
+    case ThreatType::MIRV:     burnoutAlt = 60000.f; break;
+    default:                   burnoutAlt = 20000.f; break;
+    }
+
+    float v = sp.speed;
+
+    // Target: random point in defended zone (±4 km of origin)
     float targetX = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
     float targetY = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
 
-    float v = sp.speed;
-    float rMax = v * v / g;  // max range (no drag)
+    // Max ballistic range from burnout altitude to ground: R_max = v²/g + correction
+    // Simple estimate: v²/g (flat earth, no drag — conservative)
+    float rMax = v * v / g;
 
-    // Cap launch distance so range is achievable (use 85% of max range for headroom)
-    float launchDist = qMin(sp.launchDist * 1000.f, rMax * 0.85f);
+    // Launch distance from target (how far away the burnout point is horizontally)
+    float launchDist = qMin(sp.launchDist * 1000.f, rMax * 0.80f);
 
-    // Launch position in azimuth direction, at given distance from target
-    m.pos = QVector3D(targetX - qSin(azRad) * launchDist,
-                      targetY - qCos(azRad) * launchDist,
-                      0.f);
+    // Horizontal offset from target to burnout point (in azimuth direction)
+    // We need the horizontal distance at burnout altitude.
+    // For a ballistic arc from ground, horizontal distance at burnout ≈ small
+    // compared to total range, so we approximate: burnout point is launchDist away
+    // horizontally (slightly conservative).
+    float burnoutX = targetX - qSin(azRad) * launchDist;
+    float burnoutY = targetY - qCos(azRad) * launchDist;
 
-    // Actual range from launch pos to target
-    float dx = targetX - m.pos.x();
-    float dy = targetY - m.pos.y();
-    float range = qSqrt(dx * dx + dy * dy);
+    m.pos = QVector3D(burnoutX, burnoutY, burnoutAlt);
 
-    // Solve for elevation (high-angle = steep arc, harder to intercept)
-    float sinTwoTheta = range * g / (v * v);
-    sinTwoTheta = qBound(-1.f, sinTwoTheta, 1.f);
-    // High-angle solution: θ = 90° - 0.5·asin(sin2θ)
-    float elDeg = 90.f - 0.5f * qRadiansToDegrees(qAsin(sinTwoTheta));
-    elDeg = qBound(20.f, elDeg, 85.f);  // clamp to physical limits
-    float elRad = qDegreesToRadians(elDeg);
+    // Horizontal range from burnout point to target
+    float dx = targetX - burnoutX;
+    float dy = targetY - burnoutY;
+    float hRange = qSqrt(dx * dx + dy * dy);
 
-    // Velocity aimed directly toward target (not just azimuth direction)
-    QVector3D horizDir = QVector3D(dx, dy, 0).normalized();
-    float hSpeed = v * qCos(elRad);
-    float vSpeed = v * qSin(elRad);
-    m.vel = horizDir * hSpeed + QVector3D(0, 0, vSpeed);
+    // Vertical range: burnout is above, target is at z=0
+    // Energy: vz² = 2*g*burnoutAlt (from potential energy)
+    // But we want to use burnout speed v. Decompose: v² = vz² + vh²
+    // Require missile to land at target: solve for vz.
+    // Ballistic solution from (x0,z0) to (xt, 0):
+    //   horizontal: xt = x0 + vh * t  → t = hRange/vh
+    //   vertical:   0  = z0 + vz*t - 0.5*g*t²
+    // Two unknowns (vh, vz) with constraint vh² + vz² = v²
+    // Substitute t = hRange/vh:
+    //   0 = burnoutAlt + vz*(hRange/vh) - 0.5*g*(hRange/vh)²
+    // Let r = vz/vh (tan of descent angle after burnout):
+    //   vz = r*vh, v² = vh²(1+r²) → vh = v/sqrt(1+r²)
+    //   0 = burnoutAlt + r*hRange - 0.5*g*hRange²/vh²
+    //   0 = burnoutAlt + r*hRange - 0.5*g*hRange²*(1+r²)/v²
+    // Let A = 0.5*g*hRange²/v², B = hRange:
+    //   A*r² - B*r - (burnoutAlt - A) = 0
+    //   A*r² - B*r + (A - burnoutAlt) = 0
+    float A = 0.5f * g * hRange * hRange / (v * v);
+    float B = hRange;
+    float C = A - burnoutAlt;
+    float disc = B * B - 4.f * A * C;
+    float vz, vh;
+    if (disc >= 0.f && A > 0.001f) {
+        // Two solutions: pick the one with vz > 0 (descending arc — more realistic
+        // for missiles that have already passed apogee at burnout, or ascending)
+        float r1 = (B + qSqrt(disc)) / (2.f * A);
+        float r2 = (B - qSqrt(disc)) / (2.f * A);
+        // Pick descending solution (negative vz = going down from burnout)
+        float r = (qAbs(r2) < qAbs(r1)) ? r2 : r1;
+        vh = v / qSqrt(1.f + r * r);
+        vz = r * vh;
+        // Clamp: vz should be negative (missile descending from burnout)
+        if (vz > 0.f) { vz = -vz; }
+    } else {
+        // Fallback: 45° descent
+        vh = v * 0.707f;
+        vz = -v * 0.707f;
+    }
+    vz = qBound(-v, vz, v);
+
+    QVector3D horizDir = QVector3D(dx, dy, 0);
+    if (horizDir.length() > 0.01f) horizDir.normalize();
+    else horizDir = QVector3D(qSin(azRad), qCos(azRad), 0);
+
+    m.vel = horizDir * vh + QVector3D(0, 0, vz);
 
     return m;
 }
