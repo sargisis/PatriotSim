@@ -182,28 +182,26 @@ Missile Simulation::makeMissileFromThreat(ThreatType type, float azimuth)
     // Let A = 0.5*g*hRange²/v², B = hRange:
     //   A*r² - B*r - (burnoutAlt - A) = 0
     //   A*r² - B*r + (A - burnoutAlt) = 0
+    // Quadratic: A*r² - B*r + C = 0, where r = vz/vh
     float A = 0.5f * g * hRange * hRange / (v * v);
     float B = hRange;
     float C = A - burnoutAlt;
     float disc = B * B - 4.f * A * C;
     float vz, vh;
     if (disc >= 0.f && A > 0.001f) {
-        // Two solutions: pick the one with vz > 0 (descending arc — more realistic
-        // for missiles that have already passed apogee at burnout, or ascending)
-        float r1 = (B + qSqrt(disc)) / (2.f * A);
-        float r2 = (B - qSqrt(disc)) / (2.f * A);
-        // Pick descending solution (negative vz = going down from burnout)
-        float r = (qAbs(r2) < qAbs(r1)) ? r2 : r1;
+        float sqrtD = qSqrt(disc);
+        // r1 = high-angle (steeper, larger vz/vh ratio) — ballistic missiles use this
+        // r2 = low-angle (flatter arc)
+        float r1 = (B + sqrtD) / (2.f * A);
+        float r2 = (B - sqrtD) / (2.f * A);
+        float r = (r1 > r2) ? r1 : r2;  // pick high-angle (steeper arc)
         vh = v / qSqrt(1.f + r * r);
-        vz = r * vh;
-        // Clamp: vz should be negative (missile descending from burnout)
-        if (vz > 0.f) { vz = -vz; }
+        vz = r * vh;  // positive = ascending first (correct! missile climbs to apogee then falls)
     } else {
-        // Fallback: 45° descent
-        vh = v * 0.707f;
-        vz = -v * 0.707f;
+        // Fallback: steep 70° arc upward
+        vh = v * qCos(qDegreesToRadians(70.f));
+        vz = v * qSin(qDegreesToRadians(70.f));
     }
-    vz = qBound(-v, vz, v);
 
     QVector3D horizDir = QVector3D(dx, dy, 0);
     if (horizDir.length() > 0.01f) horizDir.normalize();
@@ -241,16 +239,43 @@ void Simulation::launchTarget(QVector3D impactHint)
         azDeg = qRadiansToDegrees(qAtan2(impactHint.x(), impactHint.y()));
 
     float azRad = qDegreesToRadians(azDeg);
-    float elRad = qDegreesToRadians(m_params.elevation);
 
-    const float launchDist = 250000.f;
-    m.pos = QVector3D(-qSin(azRad) * launchDist,
-                      -qCos(azRad) * launchDist,
-                      0.f);
+    // Manual launch: also start at burnout altitude to avoid sea-level drag problem.
+    // Use 20 km as generic burnout alt, aim at origin.
+    static constexpr float g = 9.81f;
+    const float burnoutAlt = 20000.f;
+    const float v = m_params.speed;
 
-    float hSpeed = m_params.speed * qCos(elRad);
-    float vSpeed = m_params.speed * qSin(elRad);
-    m.vel = QVector3D(hSpeed * qSin(azRad), hSpeed * qCos(azRad), vSpeed);
+    // Target near origin
+    float targetX = 0.f, targetY = 0.f;
+    if (!impactHint.isNull()) { targetX = impactHint.x(); targetY = impactHint.y(); }
+
+    float launchDist = qMin(250000.f, v * v / g * 0.80f);
+    float bx = targetX - qSin(azRad) * launchDist;
+    float by = targetY - qCos(azRad) * launchDist;
+    m.pos = QVector3D(bx, by, burnoutAlt);
+
+    float dx = targetX - bx, dy = targetY - by;
+    float hRange = qSqrt(dx*dx + dy*dy);
+
+    float A = 0.5f * g * hRange * hRange / (v * v);
+    float B = hRange;
+    float C = A - burnoutAlt;
+    float disc = B*B - 4.f*A*C;
+    float vh, vz;
+    if (disc >= 0.f && A > 0.001f) {
+        float sqrtD = qSqrt(disc);
+        float r = ((B + sqrtD) / (2.f * A));  // high-angle
+        vh = v / qSqrt(1.f + r*r);
+        vz = r * vh;
+    } else {
+        vh = v * qCos(qDegreesToRadians(70.f));
+        vz = v * qSin(qDegreesToRadians(70.f));
+    }
+    QVector3D horizDir = (hRange > 0.01f)
+        ? QVector3D(dx, dy, 0).normalized()
+        : QVector3D(qSin(azRad), qCos(azRad), 0);
+    m.vel = horizDir * vh + QVector3D(0, 0, vz);
 
     m.maneuvering = m_params.maneuvering;
     m_missiles.push_back(m);
