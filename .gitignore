@@ -1,0 +1,4 @@
+patriot-sym/build/
+patriot-sym/.qtcreator/
+*.user
+*.autosave
