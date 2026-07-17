@@ -82,18 +82,31 @@ Missile Simulation::makeMissileFromThreat(ThreatType type, float azimuth)
 
     float azRad = qDegreesToRadians(azimuth);
 
-    // ── Shahed-136: slow cruise/drone — launch low and near ──────────
-    // Can't be modeled as ballistic: 150 m/s ballistic range ≈ 2.3 km.
-    // Model as: starts at 500m altitude, 50 km out, flies nearly level.
-    if (type == ThreatType::SHAHED) {
-        float launchDist = 50000.f;
-        m.pos = QVector3D(-qSin(azRad) * launchDist,
-                          -qCos(azRad) * launchDist,
-                           500.f);  // cruise altitude
-        float elRad = qDegreesToRadians(0.5f);  // nearly flat
-        float hSpeed = sp.speed * qCos(elRad);
-        float vSpeed = sp.speed * qSin(elRad);
-        m.vel = QVector3D(hSpeed * qSin(azRad), hSpeed * qCos(azRad), vSpeed);
+    // ── Aerodynamic threats (cruise missiles + drones) ───────────────
+    // These cannot use ballistic model: their speeds are too low.
+    // CRUISE (280 m/s): max ballistic range = 8 km — nonsensical.
+    // SHAHED (150 m/s): max ballistic range = 2.3 km.
+    // Model both as: start at cruise altitude, fly nearly level toward target.
+    // Iron Dome (100m–10km, 750 m/s) is designed to handle them.
+    if (type == ThreatType::CRUISE || type == ThreatType::SHAHED) {
+        float cruiseAlt  = (type == ThreatType::CRUISE) ? 300.f : 500.f;   // m
+        float launchDist = (type == ThreatType::CRUISE) ? 70000.f : 50000.f; // m
+
+        // Aim toward a random point in the defended zone
+        float targetX = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
+        float targetY = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
+
+        m.pos = QVector3D(targetX - qSin(azRad) * launchDist,
+                          targetY - qCos(azRad) * launchDist,
+                          cruiseAlt);
+
+        // Fly horizontally toward target (tiny nose-up to compensate gravity drag)
+        float dx = targetX - m.pos.x();
+        float dy = targetY - m.pos.y();
+        QVector3D horizDir = QVector3D(dx, dy, 0).normalized();
+        float elRad = qDegreesToRadians(0.8f);  // slight nose-up to hold altitude
+        m.vel = horizDir * sp.speed * qCos(elRad)
+              + QVector3D(0, 0, sp.speed * qSin(elRad));
         return m;
     }
 
