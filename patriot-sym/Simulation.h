@@ -113,7 +113,7 @@ private:
     QMap<int,int> m_totalFired;
 
     static constexpr float DT           = 1.f / 60.f;
-    static constexpr float RADAR_RANGE  = 150000.f;
+    static constexpr float RADAR_RANGE  = 300000.f;  // AN/TPY-2 (THAAD) ≈ 1000 km, MPQ-65 ≈ 150 km; use 300 km networked
     static constexpr float REACTION_TIME= 2.f;
     static constexpr int   MAX_INT_FLYING  = 2;
     static constexpr int   MAX_INT_TOTAL   = 4;

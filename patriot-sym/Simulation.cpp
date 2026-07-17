@@ -143,12 +143,11 @@ Missile Simulation::makeMissileFromThreat(ThreatType type, float azimuth)
     float targetX = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
     float targetY = (float(rand()) / float(RAND_MAX) - 0.5f) * 8000.f;
 
-    // Max ballistic range from burnout altitude to ground: R_max = v²/g + correction
-    // Simple estimate: v²/g (flat earth, no drag — conservative)
+    // Cap launch distance at 120 km so missiles are immediately within radar range
+    // and the visible arc is complete on screen. The apogee at 120 km launch is
+    // ~80-130 km — well within THAAD engagement band (40-150 km).
     float rMax = v * v / g;
-
-    // Launch distance from target (how far away the burnout point is horizontally)
-    float launchDist = qMin(sp.launchDist * 1000.f, rMax * 0.80f);
+    float launchDist = qMin(qMin(sp.launchDist * 1000.f, rMax * 0.75f), 120000.f);
 
     // Horizontal offset from target to burnout point (in azimuth direction)
     // We need the horizontal distance at burnout altitude.
@@ -250,7 +249,7 @@ void Simulation::launchTarget(QVector3D impactHint)
     float targetX = 0.f, targetY = 0.f;
     if (!impactHint.isNull()) { targetX = impactHint.x(); targetY = impactHint.y(); }
 
-    float launchDist = qMin(250000.f, v * v / g * 0.80f);
+    float launchDist = qMin(120000.f, v * v / g * 0.75f);
     float bx = targetX - qSin(azRad) * launchDist;
     float by = targetY - qCos(azRad) * launchDist;
     m.pos = QVector3D(bx, by, burnoutAlt);
